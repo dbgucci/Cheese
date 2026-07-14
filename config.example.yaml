@@ -1,0 +1,26 @@
+# Copy this to config.yaml and edit. Never commit config.yaml if it has real
+# credentials in it -- keep secrets in environment variables instead
+# (POCKET_OPTION_SSID, TELEGRAM_BOT_TOKEN) and leave the fields below blank.
+
+asset: EURUSD_otc
+timeframe_seconds: 60      # entry timeframe: 60 = 1-minute candles
+bias_multiple: 5           # higher-timeframe bias = timeframe_seconds * bias_multiple (5min here)
+poll_seconds: 15           # how often to check for a newly closed candle in `watch` mode
+
+confluence:
+  threshold: 0.55          # minimum combined confluence score to emit a signal
+
+risk:
+  account_balance: 500
+  risk_per_trade: 0.02
+  max_daily_loss_fraction: 0.06
+  max_trades_per_hour: 6
+  min_confluence_score: 0.55
+
+data_source: synthetic     # synthetic | csv | pocket_option
+csv_path: null              # required if data_source: csv
+
+telegram:
+  enabled: false
+  bot_token: null            # or set TELEGRAM_BOT_TOKEN env var
+  chat_id: null

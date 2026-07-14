@@ -1,0 +1,8 @@
+numpy>=1.26
+pandas>=2.1
+PyYAML>=6.0
+requests>=2.31
+
+# Optional, only needed for --live mode against Pocket Option.
+# Uncomment to install the unofficial async WebSocket client:
+# binaryoptionstoolsv2>=0.1

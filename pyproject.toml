@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cheese-signals"
+version = "0.1.0"
+description = "Multi-timeframe confluence signal engine for short-timeframe trading"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "PyYAML>=6.0",
+    "requests>=2.31",
+]
+
+[project.scripts]
+cheese-signals = "cheese_signals.bot:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
