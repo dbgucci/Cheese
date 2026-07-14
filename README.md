@@ -86,16 +86,46 @@ the regime switches visible for testing). 1-minute candles, 1-minute expiry,
 85% payout (Pocket Option's typical major-pair payout), 5 seeds x 6,000
 candles each, aggregated:
 
-| Strategy | Trades | Win rate | Net PnL (stakes) | Expectancy/trade | Profit factor |
-|---|---|---|---|---|---|
-| trend_following (solo) | _pending_ | | | | |
-| mean_reversion (solo) | _pending_ | | | | |
-| price_action (solo) | _pending_ | | | | |
-| **confluence (combined)** | _pending_ | | | | |
+| Strategy | Trades | Win rate | Net PnL (stakes) | Avg PnL/trade |
+|---|---|---|---|---|
+| trend_following (solo) | 3,130 | 57.1% | +175.95u | +0.056u |
+| mean_reversion (solo) | 18 | 38.9% | -5.05u | -0.281u |
+| price_action (solo) | 5,228 | 50.5% | -344.00u | -0.066u |
+| **confluence (combined)** | 1,506 | 57.2% | +88.70u | +0.059u |
 
 Break-even win rate at an 85% payout is **54.1%** -- you need to be right
 more than that just to not lose money; anything meaningfully above it is
 where an edge would show up.
+
+A few things worth being honest about in this table:
+
+- **`mean_reversion` and `price_action` are unprofitable standalone** on
+  this synthetic data. `mean_reversion` barely fires at all (18 trades over
+  30,000 candles across 5 seeds) because its ADX<=20 gate is strict and the
+  synthetic generator spends most of its time in the trending regimes it
+  was designed to switch into; the few trades it does take aren't a large
+  enough sample to say much either way. `price_action` fires constantly
+  (5,228 trades) and loses money doing it -- support/resistance rejection
+  on its own isn't a real edge here.
+- **`confluence` roughly matches `trend_following`'s per-trade edge (+0.059u
+  vs. +0.056u) while taking about half as many trades** (1,506 vs. 3,130)
+  and running noticeably smaller per-seed drawdowns in 4 of 5 seeds. That's
+  the intended effect of requiring price-action to agree before boosting a
+  trend signal, and of down-weighting (rather than blocking) trend signals
+  that fight the higher-timeframe bias: it trades less often, but doesn't
+  give up the edge to do it.
+- **An earlier version of this same confluence engine did worse than
+  `trend_following` traded alone** (net negative, then barely break-even) --
+  first because it averaged all three strategies' votes as equals, and then
+  because it let `price_action` fire as an independent trigger whenever no
+  regime strategy had fired. Both were real bugs caught by running this
+  exact backtest, not just eyeballing the code. See the commit history and
+  `confluence.py`'s docstring for the specifics.
+- **One seed (99) is net negative for both `trend_following` and
+  `confluence`** (-34.85u and -21.35u respectively) even though the other
+  four are solidly positive. That's the honest reason to run this over many
+  seeds/windows rather than one: a single lucky backtest window will always
+  exist somewhere, and it isn't evidence of a durable edge on its own.
 
 Reproduce this yourself:
 
