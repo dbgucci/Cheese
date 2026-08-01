@@ -4,3 +4,12 @@ __pycache__/
 *.egg-info/
 config.yaml
 .pytest_cache/
+
+# Build output
+build/
+dist/
+
+# App data — never commit trade journals, databases, or settings holding tokens
+CheeseSignals/
+*.db
+settings.json

@@ -17,5 +17,13 @@ dependencies = [
 [project.scripts]
 cheese-signals = "cheese_signals.bot:main"
 
+[project.gui-scripts]
+cheese-signals-app = "cheese_signals.gui:main"
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+live = ["binaryoptionstoolsv2>=0.1"]
+build = ["pyinstaller>=6.3"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

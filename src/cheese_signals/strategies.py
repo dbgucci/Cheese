@@ -6,6 +6,7 @@ script) is that each strategy is only reliable in a specific market regime:
 - ``trend_following``   -> works when the market is actually trending (ADX high)
 - ``mean_reversion``    -> works when the market is range-bound (ADX low)
 - ``price_action``      -> works at structural support/resistance regardless of regime
+- ``liquidity_sweep``   -> stop-hunt reversal; the primary 1-minute setup
 
 Fired independently, each one racks up false signals in the regime it
 wasn't designed for. The confluence engine in ``confluence.py`` uses the
@@ -152,6 +153,105 @@ def price_action(df: pd.DataFrame, lookback: int = 20) -> Signal:
         tag = "engulfing" if bearish_engulf else "pin bar"
         return Signal(DOWN, 0.65, f"bearish {tag} at resistance {resistance:.5f}", ["price_action"])
     return Signal(FLAT, 0.0, "no rejection pattern at S/R")
+
+
+def liquidity_sweep(
+    df: pd.DataFrame,
+    pivot_lookback: int = 3,
+    level_lookback: int = 40,
+    displacement_atr_mult: float = 0.55,
+    level_tolerance: float = 0.0002,
+) -> Signal:
+    """Stop-hunt reversal: price wicks through a swing level, then closes back inside.
+
+    This is the highest-conviction 1-minute setup in this engine. The logic
+    follows the standard "liquidity sweep" definition rather than a loose
+    "long wick = reversal" heuristic, because the extra conditions are what
+    separate a real stop-run from ordinary noise:
+
+    1. **A real level must exist.** We track confirmed pivot swing highs/lows
+       (a bar whose high/low is the extreme of ``pivot_lookback`` bars either
+       side), not just the rolling max/min -- resting stop orders cluster at
+       structurally obvious points.
+    2. **The level must be swept, not broken.** The candle's wick has to push
+       *through* the level while its body closes back *inside* it. A candle
+       that closes beyond the level is a genuine breakout, which is the
+       opposite trade, so it is explicitly rejected here.
+    3. **The rejection needs conviction (displacement).** The move back inside
+       is measured against ATR -- a sweep on a tiny, indecisive candle is
+       noise. This is the filter that removes most false positives.
+
+    Direction is contrarian to the sweep: sweeping *highs* (buy-side liquidity)
+    signals a move DOWN, and sweeping *lows* signals a move UP.
+    """
+    if len(df) < level_lookback + pivot_lookback + 2:
+        return Signal(FLAT, 0.0, "insufficient history")
+
+    high, low, close, open_ = df["high"], df["low"], df["close"], df["open"]
+
+    atr_series = ind.atr(high, low, close)
+    atr_now = _last(atr_series)
+    if pd.isna(atr_now) or atr_now <= 0:
+        return Signal(FLAT, 0.0, "insufficient history")
+
+    h0, l0, c0, o0 = _last(high), _last(low), _last(close), _last(open_)
+    body = abs(c0 - o0)
+
+    # Confirmed pivots only: exclude the most recent `pivot_lookback` bars,
+    # since a pivot needs bars on both sides of it to be confirmed at all.
+    window_high = high.iloc[-(level_lookback + pivot_lookback): -1]
+    window_low = low.iloc[-(level_lookback + pivot_lookback): -1]
+
+    swing_highs: list[float] = []
+    swing_lows: list[float] = []
+    for k in range(pivot_lookback, len(window_high) - pivot_lookback):
+        seg_h = window_high.iloc[k - pivot_lookback: k + pivot_lookback + 1]
+        if window_high.iloc[k] == seg_h.max():
+            swing_highs.append(float(window_high.iloc[k]))
+        seg_l = window_low.iloc[k - pivot_lookback: k + pivot_lookback + 1]
+        if window_low.iloc[k] == seg_l.min():
+            swing_lows.append(float(window_low.iloc[k]))
+
+    if not swing_highs and not swing_lows:
+        return Signal(FLAT, 0.0, "no confirmed swing levels")
+
+    displacement = body / atr_now
+
+    # --- Sell-side setup: sweep of buy-side liquidity above a swing high ---
+    for level in sorted(swing_highs, reverse=True):
+        tol = level * level_tolerance
+        swept = h0 > level + tol
+        closed_back_inside = c0 < level
+        if swept and closed_back_inside and displacement >= displacement_atr_mult:
+            upper_wick = h0 - max(o0, c0)
+            wick_quality = min(upper_wick / atr_now, 1.5) / 1.5
+            score = min(0.55 + 0.25 * wick_quality + 0.20 * min(displacement, 1.5) / 1.5, 1.0)
+            return Signal(
+                DOWN,
+                score,
+                f"swept buy-side liquidity at {level:.5f} (wick {upper_wick / atr_now:.2f} ATR, "
+                f"displacement {displacement:.2f} ATR), closed back inside",
+                ["liquidity_sweep"],
+            )
+
+    # --- Buy-side setup: sweep of sell-side liquidity below a swing low ---
+    for level in sorted(swing_lows):
+        tol = level * level_tolerance
+        swept = l0 < level - tol
+        closed_back_inside = c0 > level
+        if swept and closed_back_inside and displacement >= displacement_atr_mult:
+            lower_wick = min(o0, c0) - l0
+            wick_quality = min(lower_wick / atr_now, 1.5) / 1.5
+            score = min(0.55 + 0.25 * wick_quality + 0.20 * min(displacement, 1.5) / 1.5, 1.0)
+            return Signal(
+                UP,
+                score,
+                f"swept sell-side liquidity at {level:.5f} (wick {lower_wick / atr_now:.2f} ATR, "
+                f"displacement {displacement:.2f} ATR), closed back inside",
+                ["liquidity_sweep"],
+            )
+
+    return Signal(FLAT, 0.0, "no liquidity sweep")
 
 
 def higher_timeframe_bias(df_htf: pd.DataFrame) -> int:
