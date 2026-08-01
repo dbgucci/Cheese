@@ -2,6 +2,10 @@
 REM Build CheeseSignals.exe on a Windows machine.
 REM Requires Python 3.10+ installed and on PATH.
 
+REM Always run from the folder this script lives in, so double-clicking it
+REM from Explorer (or running it from another directory) still works.
+cd /d "%~dp0"
+
 echo ============================================
 echo   Building Cheese Signals for Windows
 echo ============================================
@@ -9,34 +13,65 @@ echo.
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python not found on PATH.
-    echo Install Python 3.10 or newer from https://python.org
-    echo Make sure to tick "Add Python to PATH" during install.
+    echo ERROR: Python was not found on PATH.
+    echo.
+    echo Install Python 3.10 or newer from https://www.python.org/downloads/
+    echo IMPORTANT: tick "Add python.exe to PATH" on the first install screen.
+    echo Then close this window, open a new one, and run this script again.
+    echo.
     pause
     exit /b 1
 )
 
 echo [1/4] Creating virtual environment...
-if not exist .venv python -m venv .venv
+if not exist .venv (
+    python -m venv .venv
+    if errorlevel 1 (
+        echo ERROR: could not create the virtual environment.
+        pause
+        exit /b 1
+    )
+)
 
-echo [2/4] Installing dependencies...
+echo [2/4] Installing dependencies (a few minutes on first run)...
 call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip >nul
-pip install -e . >nul
-pip install PySide6 pyinstaller >nul
+python -m pip install --upgrade pip
+if errorlevel 1 goto :installfail
+pip install -e .
+if errorlevel 1 goto :installfail
+pip install PySide6 pyinstaller
+if errorlevel 1 goto :installfail
 
+echo.
 echo [3/4] Building executable (this takes a few minutes)...
 pyinstaller packaging\CheeseSignals.spec --noconfirm
+if errorlevel 1 (
+    echo.
+    echo ERROR: PyInstaller failed. The output above says why.
+    pause
+    exit /b 1
+)
 
+echo.
 echo [4/4] Done.
 echo.
 if exist dist\CheeseSignals.exe (
     echo SUCCESS: dist\CheeseSignals.exe
     echo.
-    echo Copy that file to your Desktop and double-click it.
-    echo It will create a "CheeseSignals" folder on your Desktop for its data.
+    echo Copy that file wherever you like and double-click it.
+    echo On first run it creates a "CheeseSignals" folder on your Desktop
+    echo for its database, settings and exports.
 ) else (
-    echo BUILD FAILED - see the output above.
+    echo BUILD FAILED: dist\CheeseSignals.exe was not produced.
+    echo Scroll up to find the first line containing "ERROR".
 )
 echo.
 pause
+exit /b 0
+
+:installfail
+echo.
+echo ERROR: dependency installation failed. The output above says why.
+echo Common causes: no internet connection, or a proxy/firewall blocking pip.
+pause
+exit /b 1
