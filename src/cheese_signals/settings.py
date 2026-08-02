@@ -33,9 +33,18 @@ class Settings:
     # breaks down, so a longer lead means more warning but more cancellations.
     lead_minutes: int = 2
 
+    # --- strategy ---
+    # trend_continuation trades with the trend (Heikin Ashi + Keltner + EMA200
+    # + fractal); liquidity_sweep trades reversals. They are opposite postures,
+    # so only one runs at a time.
+    strategy: str = "trend_continuation"
+    adaptive_expiry: bool = True
+    expiry_min_minutes: int = 1
+    expiry_max_minutes: int = 5
+
     # --- signal quality ---
     min_score: float = 0.60
-    require_liquidity_sweep: bool = True
+    require_liquidity_sweep: bool = False
     use_higher_timeframe_bias: bool = True
     bias_multiple: int = 5
     cooldown_minutes: int = 3

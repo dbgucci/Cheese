@@ -78,7 +78,11 @@ def _engine(journal, feed, **overrides):
     s.lead_minutes = 2
     s.expiry_minutes = 1
     s.min_score = 0.4
+    # These tests exercise the sweep setup specifically, so select it rather
+    # than inheriting whatever the shipped default happens to be.
+    s.strategy = "liquidity_sweep"
     s.require_liquidity_sweep = True
+    s.adaptive_expiry = False      # fixed 1-minute expiry keeps the maths explicit
     s.cooldown_minutes = 0
     s.use_higher_timeframe_bias = False
     for k, v in overrides.items():

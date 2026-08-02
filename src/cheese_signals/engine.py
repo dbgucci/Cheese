@@ -18,6 +18,7 @@ import pandas as pd
 from . import confluence, outcome as outcome_mod, profiles, sessions, storage
 from . import indicators as ind
 from . import strategies as strat
+from . import trend as trend_mod
 from .scheduler import ACTIVE, PendingSignal, SignalScheduler, revalidate, schedule_signal
 from .settings import Settings
 from .strategies import DOWN, FLAT, UP
@@ -163,7 +164,11 @@ class SignalEngine:
         if result.direction == FLAT or result.score < self.settings.min_score:
             return
 
-        if self.settings.require_liquidity_sweep and strategy_name != "liquidity_sweep":
+        if (
+            self.settings.require_liquidity_sweep
+            and self.settings.strategy != "trend_continuation"
+            and strategy_name != "liquidity_sweep"
+        ):
             return
 
         if self.scheduler.has_pending_for(asset):
@@ -178,6 +183,17 @@ class SignalEngine:
             if session_label not in self.settings.allowed_sessions:
                 return
 
+        expiry_minutes = self.settings.expiry_minutes
+        if self.settings.adaptive_expiry:
+            advice = trend_mod.recommend_expiry(
+                df, result.direction,
+                min_minutes=self.settings.expiry_min_minutes,
+                max_minutes=self.settings.expiry_max_minutes,
+            )
+            expiry_minutes = advice.minutes
+            features["expiry_reason"] = advice.reason
+            features["expiry_minutes"] = expiry_minutes
+
         signal = schedule_signal(
             asset=asset,
             direction=result.direction,
@@ -187,7 +203,7 @@ class SignalEngine:
             detected_at=now,
             session=session_label,
             lead_minutes=self.settings.lead_minutes,
-            expiry_minutes=self.settings.expiry_minutes,
+            expiry_minutes=expiry_minutes,
             timeframe_seconds=self.settings.timeframe_seconds,
             features=features,
         )
@@ -213,6 +229,8 @@ class SignalEngine:
 
     def _evaluate(self, df: pd.DataFrame, asset: str, profile) -> tuple:
         """Run the strategies and return (result, winning_strategy_name, features)."""
+        if self.settings.strategy == "trend_continuation":
+            return self._evaluate_trend(df, profile)
         sweep = strat.liquidity_sweep(df)
         conf = confluence.evaluate(
             df,
@@ -270,6 +288,37 @@ class SignalEngine:
         r.score = min(score, 1.0)
         r.describe = lambda: reason
         return r, name, features
+
+    def _evaluate_trend(self, df: pd.DataFrame, profile) -> tuple:
+        """Heikin Ashi trend continuation, scored on real prices."""
+        sig = trend_mod.trend_continuation(df)
+
+        high, low, close = df["high"], df["low"], df["close"]
+        adx_val = float(ind.adx(high, low, close).iloc[-1])
+        atr_val = float(ind.atr(high, low, close).iloc[-1])
+        o0, c0 = float(df["open"].iloc[-1]), float(close.iloc[-1])
+        displacement = abs(c0 - o0) / atr_val if atr_val > 0 else 0.0
+
+        features = {
+            "adx": round(adx_val, 2) if adx_val == adx_val else None,
+            "atr": round(atr_val, 6) if atr_val == atr_val else None,
+            "displacement_atr": round(displacement, 3),
+            "bias_aligned": None,
+            "profile": profile.name,
+            "raw_score": round(sig.score, 3),
+            "weighted_score": round(sig.score, 3),
+            "invalidation_level": sig.meta.get("level"),
+            "event_setup": bool(sig.meta.get("event")),
+        }
+
+        class _R:
+            pass
+
+        r = _R()
+        r.direction = sig.direction
+        r.score = sig.score
+        r.describe = lambda: sig.reason
+        return r, "trend_continuation", features
 
     def _bias_frame(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         mult = self.settings.bias_multiple

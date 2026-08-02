@@ -401,6 +401,57 @@ class SettingsPage(QWidget):
         scroll.setWidget(holder)
         root.addWidget(scroll, 1)
 
+        # ---------------- strategy ----------------
+        card, lay = _card("Strategy")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(11)
+
+        self.strategy_box = QComboBox()
+        self.strategy_box.addItems(["trend_continuation", "liquidity_sweep"])
+        self.strategy_box.setCurrentText(s.strategy)
+        grid.addWidget(QLabel("Setup to trade"), 0, 0)
+        grid.addWidget(self.strategy_box, 0, 1)
+        grid.setColumnStretch(0, 1)
+        lay.addLayout(grid)
+
+        strat_note = QLabel(
+            "trend_continuation trades WITH the trend: Heikin Ashi above/below the Keltner "
+            "mid (EMA 20), price on the same side of the EMA 200, triggered by a confirmed "
+            "period-7 fractal. liquidity_sweep trades reversals — the opposite posture. "
+            "Only one runs at a time.\n\n"
+            "Run 'cheese-signals lab' to compare both on your own recorded candles before "
+            "choosing."
+        )
+        strat_note.setObjectName("Hint")
+        strat_note.setWordWrap(True)
+        lay.addWidget(strat_note)
+
+        self.adaptive_expiry = QCheckBox(
+            "Choose expiry automatically from how long moves have been lasting"
+        )
+        self.adaptive_expiry.setChecked(s.adaptive_expiry)
+        lay.addWidget(self.adaptive_expiry)
+
+        grid2 = QGridLayout()
+        grid2.setHorizontalSpacing(16)
+        grid2.setVerticalSpacing(11)
+        self.expiry_min = QSpinBox()
+        self.expiry_min.setRange(1, 10)
+        self.expiry_min.setValue(s.expiry_min_minutes)
+        self.expiry_min.setSuffix("  min")
+        self.expiry_max = QSpinBox()
+        self.expiry_max.setRange(1, 15)
+        self.expiry_max.setValue(s.expiry_max_minutes)
+        self.expiry_max.setSuffix("  min")
+        grid2.addWidget(QLabel("Shortest expiry it may pick"), 0, 0)
+        grid2.addWidget(self.expiry_min, 0, 1)
+        grid2.addWidget(QLabel("Longest expiry it may pick"), 1, 0)
+        grid2.addWidget(self.expiry_max, 1, 1)
+        grid2.setColumnStretch(0, 1)
+        lay.addLayout(grid2)
+        body.addWidget(card)
+
         # ---------------- signal timing ----------------
         card, lay = _card("Signal timing")
         grid = QGridLayout()
@@ -602,6 +653,10 @@ class SettingsPage(QWidget):
     def save(self) -> None:
         assets = [a.strip() for a in self.assets_edit.toPlainText().splitlines() if a.strip()]
         self.window.settings.update(
+            strategy=self.strategy_box.currentText(),
+            adaptive_expiry=self.adaptive_expiry.isChecked(),
+            expiry_min_minutes=self.expiry_min.value(),
+            expiry_max_minutes=max(self.expiry_max.value(), self.expiry_min.value()),
             lead_minutes=self.lead.value(),
             expiry_minutes=self.expiry.value(),
             cooldown_minutes=self.cooldown.value(),

@@ -64,6 +64,57 @@ def cmd_backtest(args: argparse.Namespace) -> None:
             print(f"  {t.timestamp}  {side:4s} {outcome} score={t.score:.2f}  {t.reason}")
 
 
+def cmd_lab(args: argparse.Namespace) -> None:
+    from . import strategy_lab as lab
+
+    if args.csv:
+        frames = {args.csv: CsvFeed(args.csv).get_candles(10 ** 9)}
+    elif args.synthetic:
+        frames = {"synthetic": generate_synthetic_candles(args.synthetic, seed=42)}
+    else:
+        frames = lab.load_journal_candles(args.asset)
+        if not frames:
+            print(
+                "No candles recorded yet. Run the app with the engine on for a while, "
+                "or pass --synthetic 5000 to try it on generated data."
+            )
+            return
+
+    expiries = tuple(args.expiry) if args.expiry else (1, 2, 3, 4, 5)
+    strategies = args.strategy or list(lab.STRATEGIES)
+
+    for asset, df in sorted(frames.items()):
+        if df is None or len(df) < 400:
+            print(f"\n{asset}: only {0 if df is None else len(df)} candles -- need ~400+, skipping")
+            continue
+
+        print(f"\n=== {asset} — {len(df)} candles "
+              f"({df.index[0]:%Y-%m-%d %H:%M} to {df.index[-1]:%Y-%m-%d %H:%M} UTC) ===")
+        for e in expiries:
+            print("  " + lab.baseline(df, e, payout=args.payout))
+        print()
+
+        results = lab.sweep(
+            df, strategies=strategies, expiries=expiries,
+            payout=args.payout, lead_minutes=args.lead, min_score=args.min_score,
+        )
+        for r in sorted(results, key=lambda r: -r.pnl):
+            if r.trades:
+                print("  " + r.line(args.payout))
+
+        tradeable = [r for r in results if r.trades >= 30]
+        if tradeable:
+            best = max(tradeable, key=lambda r: r.pnl)
+            print(
+                f"\n  best with a usable sample: {best.strategy} at {best.expiry}min "
+                f"({best.trades} trades, {best.win_rate:.1%}, {best.pnl:+.2f})"
+            )
+            if best.edge(args.payout) <= 0:
+                print("  NOTE: even the best option is below break-even on this data.")
+        else:
+            print("\n  No combination reached 30 trades -- collect more candles first.")
+
+
 def cmd_watch(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     feed = build_feed(cfg)
@@ -134,6 +185,24 @@ def main() -> None:
     bt.add_argument("--threshold", type=float, default=0.55)
     bt.add_argument("--verbose", action="store_true")
     bt.set_defaults(func=cmd_backtest)
+
+    lab = sub.add_parser(
+        "lab",
+        help="compare strategies and expiries on your own recorded candles",
+    )
+    lab.add_argument("--asset", help="limit to one asset, e.g. EURUSD_otc")
+    lab.add_argument("--csv", help="use a CSV instead of the journal")
+    lab.add_argument("--synthetic", type=int, metavar="N",
+                     help="use N synthetic candles instead of real data")
+    lab.add_argument("--strategy", action="append",
+                     help="strategy to test (repeatable); default: all")
+    lab.add_argument("--expiry", type=int, action="append",
+                     help="expiry in minutes (repeatable); default: 1-5")
+    lab.add_argument("--payout", type=float, default=0.85)
+    lab.add_argument("--lead", type=int, default=0,
+                     help="advance-warning delay in minutes, as used live")
+    lab.add_argument("--min-score", type=float, default=0.0)
+    lab.set_defaults(func=cmd_lab)
 
     w = sub.add_parser("watch", help="poll a live/synthetic feed and emit signals")
     w.add_argument("--config", default="config.yaml")
