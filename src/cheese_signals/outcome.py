@@ -21,6 +21,22 @@ from .scheduler import PendingSignal
 from .strategies import DOWN, FLAT, UP
 
 
+def pip_size(asset: str) -> float:
+    """One pip for this instrument.
+
+    Yen-quoted pairs are quoted to 2-3 decimals and their pip is 0.01, not
+    0.0001. Using a single 1/10000 factor everywhere reported a 1.1-pip
+    USDJPY move as "+110.0 pips" and a 6.5-pip EURJPY move as "-650.0 pips",
+    which makes the trade log actively misleading.
+    """
+    base = asset.upper().replace("_OTC", "")
+    return 0.01 if base.endswith("JPY") else 0.0001
+
+
+def pips(asset: str, price_delta: float) -> float:
+    return price_delta / pip_size(asset)
+
+
 @dataclass
 class Outcome:
     signal: PendingSignal
@@ -39,7 +55,7 @@ class Outcome:
 
     @property
     def move_pips(self) -> float:
-        return (self.exit_price - self.entry_price) * 10_000
+        return pips(self.signal.asset, self.exit_price - self.entry_price)
 
 
 def _direction_of(entry_price: float, exit_price: float) -> int:
@@ -66,7 +82,7 @@ def attribute(
     bits: list[str] = []
 
     actual = _direction_of(entry_price, exit_price)
-    move = (exit_price - entry_price) * 10_000
+    move = pips(signal.asset, exit_price - entry_price)
 
     if actual == FLAT:
         return (

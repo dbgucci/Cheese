@@ -24,6 +24,10 @@ from .strategies import DOWN, FLAT, UP
 
 Callback = Callable[..., None]
 
+# How long to wait for the expiry candle to arrive before settling on
+# whatever price is available.
+SETTLEMENT_GRACE_SECONDS = 90.0
+
 
 class SignalEngine:
     def __init__(
@@ -317,7 +321,36 @@ class SignalEngine:
             self.journal.set_signal_status(sig.db_id, ACTIVE)
         self.on_status(f"Entered {sig.asset} {sig.side} @ {price:.5f}")
 
+    def _has_candle_at_or_after(self, asset: str, ts: datetime) -> bool:
+        """Whether the candle covering ``ts`` has actually closed and arrived."""
+        try:
+            df = self._feed_for(asset).get_candles(5)
+            if df is None or df.empty:
+                return False
+            stamp = pd.Timestamp(ts)
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            last = df.index[-1]
+            if last.tzinfo is None:
+                last = last.tz_localize("UTC")
+            return last >= stamp
+        except Exception:
+            return False
+
     def _settle(self, sig: PendingSignal, now: datetime) -> None:
+        # The expiry candle closes *at* expiry_at and takes a moment to reach
+        # the feed. Settling before it arrives prices the exit from the entry
+        # candle, so exit == entry and the trade is recorded as a guaranteed
+        # loss that never happened. Wait for the candle, within a grace period.
+        if not self._has_candle_at_or_after(sig.asset, sig.expiry_at):
+            waited = (now - sig.expiry_at).total_seconds()
+            if waited < SETTLEMENT_GRACE_SECONDS:
+                return  # try again on the next tick
+            self.on_status(
+                f"{sig.asset}: expiry candle never arrived after "
+                f"{SETTLEMENT_GRACE_SECONDS:.0f}s; settling on last known price"
+            )
+
         exit_price = self._price_at(sig.asset, sig.expiry_at)
         if exit_price is None or sig.entry_price is None:
             self.scheduler.mark_settled(sig)
