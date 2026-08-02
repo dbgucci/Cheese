@@ -133,13 +133,31 @@ def revalidate(
     current_direction: int,
     current_score: float,
     min_score: float,
+    latest_close: Optional[float] = None,
     score_collapse_ratio: float = 0.6,
 ) -> Optional[str]:
     """Re-check a not-yet-entered signal against the latest candle.
 
     Returns a cancellation reason, or ``None`` if the signal still stands.
-    Called once per new candle during the lead window; this is what stops the
-    advance warning from being a blind promise made two minutes ago.
+
+    Crucially, this asks *"is the premise still true?"* -- **not** *"is the
+    setup still firing?"*. Most setups here are one-shot events: a liquidity
+    sweep happens on a single candle and is over. Re-running the detector a
+    minute later correctly reports "no sweep right now", so scoring a pending
+    signal that way drives it to zero and cancels every single trade before it
+    is ever taken. (That was a real bug: nothing ever entered, so no outcomes,
+    history or analytics were ever produced.)
+
+    A pending event setup is therefore invalidated only by evidence that it was
+    *wrong*:
+
+    * an opposing setup actually fires, or
+    * price closes back through the level that defined it -- for a swept high,
+      closing above that high means the level genuinely broke rather than being
+      swept, which is the opposite trade.
+
+    Score decay still applies to continuous setups (trend/mean-reversion),
+    where "the condition no longer holds" is meaningful.
     """
     if pending.status != PENDING:
         return None
@@ -147,7 +165,21 @@ def revalidate(
     if current_direction != FLAT and current_direction != pending.direction:
         return "setup invalidated: direction flipped before entry"
 
-    if current_score < min_score * score_collapse_ratio:
+    level = (pending.features or {}).get("invalidation_level")
+    if level and latest_close is not None:
+        if pending.direction == DOWN and latest_close > level:
+            return (
+                f"setup invalidated: price closed above the swept level "
+                f"({latest_close:.5f} > {level:.5f}) -- a genuine breakout, not a sweep"
+            )
+        if pending.direction == UP and latest_close < level:
+            return (
+                f"setup invalidated: price closed below the swept level "
+                f"({latest_close:.5f} < {level:.5f}) -- a genuine breakdown, not a sweep"
+            )
+
+    is_event = bool((pending.features or {}).get("event_setup"))
+    if not is_event and current_score < min_score * score_collapse_ratio:
         return (
             f"setup decayed: score fell to {current_score:.2f} "
             f"(below {min_score * score_collapse_ratio:.2f})"

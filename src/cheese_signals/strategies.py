@@ -34,6 +34,12 @@ class Signal:
     score: float  # 0..1 confidence within this single strategy
     reason: str
     tags: list[str] = field(default_factory=list)
+    # Extra facts about the setup, used to re-check it later without
+    # re-detecting it. ``level`` is the price that defines the setup: if price
+    # closes through it, the premise is broken. ``event`` marks a one-shot
+    # pattern (it happens on a single candle and does not persist), which must
+    # never be re-validated by asking whether it is still firing.
+    meta: dict = field(default_factory=dict)
 
     @property
     def is_actionable(self) -> bool:
@@ -148,10 +154,12 @@ def price_action(df: pd.DataFrame, lookback: int = 20) -> Signal:
 
     if near_support and (bullish_engulf or bullish_pin):
         tag = "engulfing" if bullish_engulf else "pin bar"
-        return Signal(UP, 0.65, f"bullish {tag} at support {support:.5f}", ["price_action"])
+        return Signal(UP, 0.65, f"bullish {tag} at support {support:.5f}", ["price_action"],
+                      meta={"level": float(support), "event": True})
     if near_resistance and (bearish_engulf or bearish_pin):
         tag = "engulfing" if bearish_engulf else "pin bar"
-        return Signal(DOWN, 0.65, f"bearish {tag} at resistance {resistance:.5f}", ["price_action"])
+        return Signal(DOWN, 0.65, f"bearish {tag} at resistance {resistance:.5f}", ["price_action"],
+                      meta={"level": float(resistance), "event": True})
     return Signal(FLAT, 0.0, "no rejection pattern at S/R")
 
 
@@ -232,6 +240,7 @@ def liquidity_sweep(
                 f"swept buy-side liquidity at {level:.5f} (wick {upper_wick / atr_now:.2f} ATR, "
                 f"displacement {displacement:.2f} ATR), closed back inside",
                 ["liquidity_sweep"],
+                meta={"level": float(level), "event": True},
             )
 
     # --- Buy-side setup: sweep of sell-side liquidity below a swing low ---
@@ -249,6 +258,7 @@ def liquidity_sweep(
                 f"swept sell-side liquidity at {level:.5f} (wick {lower_wick / atr_now:.2f} ATR, "
                 f"displacement {displacement:.2f} ATR), closed back inside",
                 ["liquidity_sweep"],
+                meta={"level": float(level), "event": True},
             )
 
     return Signal(FLAT, 0.0, "no liquidity sweep")

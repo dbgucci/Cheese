@@ -44,18 +44,25 @@ def _sweep_frame(n=120, seed=0):
 
 
 class FakeFeed:
-    """Returns a fixed frame; `price` is what a post-entry quote will report."""
+    """A candle feed that grows over time, like the real streaming buffer.
 
-    def __init__(self, df, price=None):
+    ``append`` adds a closed candle at a specific timestamp, so entry and
+    expiry can be priced at their own moments rather than both reading
+    whatever the latest candle happens to be.
+    """
+
+    def __init__(self, df):
         self.df = df
-        self.price = price
 
     def get_candles(self, count):
-        if self.price is not None and count <= 3:
-            tail = self.df.tail(1).copy()
-            tail["close"] = self.price
-            return tail
         return self.df.tail(count)
+
+    def append(self, ts, close):
+        row = pd.DataFrame(
+            {"open": [close], "high": [close], "low": [close], "close": [close], "volume": [100.0]},
+            index=[pd.Timestamp(ts)],
+        )
+        self.df = pd.concat([self.df, row])
 
 
 @pytest.fixture
@@ -131,13 +138,13 @@ def test_full_lifecycle_settles_a_win_into_the_journal(journal):
     sig = cap["signals"][0]
 
     # Enter at the scheduled minute.
-    feed.price = 1.1000
+    feed.append(sig.entry_at, 1.1000)
     eng._enter(sig, sig.entry_at)
     assert sig.status == "active"
     assert sig.entry_price == pytest.approx(1.1000)
 
     # Price falls by expiry; the signal predicted DOWN, so this is a win.
-    feed.price = 1.0994
+    feed.append(sig.expiry_at, 1.0994)
     eng._settle(sig, sig.expiry_at)
 
     assert len(cap["results"]) == 1
@@ -163,9 +170,9 @@ def test_full_lifecycle_settles_a_loss(journal):
     eng._scan_asset("EURUSD_otc", datetime(2026, 8, 3, 14, 30, 20, tzinfo=timezone.utc))
     sig = cap["signals"][0]
 
-    feed.price = 1.1000
+    feed.append(sig.entry_at, 1.1000)
     eng._enter(sig, sig.entry_at)
-    feed.price = 1.1006          # rose, but we predicted DOWN
+    feed.append(sig.expiry_at, 1.1006)   # rose, but we predicted DOWN
     eng._settle(sig, sig.expiry_at)
 
     assert cap["results"][0].won is False
@@ -183,6 +190,56 @@ def test_one_signal_per_asset_at_a_time(journal):
     eng._last_candle_ts.clear()
     eng._scan_asset("EURUSD_otc", datetime(2026, 8, 3, 14, 31, 20, tzinfo=timezone.utc))
     assert len(cap["signals"]) == 1
+
+
+def test_signal_survives_lead_window_and_reaches_the_journal(journal):
+    """The production regression, end to end.
+
+    A sweep is detected, then the following candles contain no sweep at all
+    (score 0.0). The signal must survive to entry, settle, and land in the
+    journal -- previously it was cancelled every time, which is why History
+    and Analytics stayed empty.
+    """
+    feed = FakeFeed(_sweep_frame())
+    eng, cap = _engine(journal, feed)
+
+    detected = datetime(2026, 8, 3, 14, 30, 20, tzinfo=timezone.utc)
+    eng._scan_asset("EURUSD_otc", detected)
+    sig = cap["signals"][0]
+
+    # Two candles pass during the lead window with no sweep re-firing.
+    flat = pd.DataFrame(
+        {"open": 1.1, "high": 1.1001, "low": 1.0999, "close": 1.1, "volume": 100.0},
+        index=pd.date_range("2026-08-03T12:00:00Z", periods=150, freq="1min"),
+    )
+    feed.df = flat
+    for minute in (31, 32):
+        eng._last_candle_ts.clear()
+        eng._scan_asset("EURUSD_otc", datetime(2026, 8, 3, 14, minute, 20, tzinfo=timezone.utc))
+
+    assert sig.status == "pending", f"signal was cancelled: {sig.cancel_reason}"
+    assert not cap["errors"]
+
+    feed.append(sig.entry_at, 1.1000)
+    eng._enter(sig, sig.entry_at)
+    assert sig.status == "active"
+
+    feed.append(sig.expiry_at, 1.0994)
+    eng._settle(sig, sig.expiry_at)
+
+    # History and Analytics read from exactly this.
+    rows = journal.joined_results()
+    assert len(rows) == 1
+    assert rows[0]["outcome_reason"]
+    assert journal.summary_counts()["settled"] == 1
+
+
+def test_sweep_signal_carries_its_invalidation_level(journal):
+    eng, cap = _engine(journal, FakeFeed(_sweep_frame()))
+    eng._scan_asset("EURUSD_otc", datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc))
+    features = cap["signals"][0].features
+    assert features["event_setup"] is True
+    assert isinstance(features["invalidation_level"], float)
 
 
 def test_require_liquidity_sweep_filters_other_setups(journal):

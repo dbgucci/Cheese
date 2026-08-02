@@ -146,6 +146,7 @@ class SignalEngine:
                 result.direction,
                 result.score,
                 min_score=self.settings.min_score,
+                latest_close=float(df["close"].iloc[-1]),
             )
             if reason:
                 self.scheduler.cancel(pending, reason)
@@ -230,10 +231,17 @@ class SignalEngine:
             chosen, name, score = sweep, "liquidity_sweep", sweep_score
             direction = sweep.direction
             reason = sweep.reason
+            meta = sweep.meta
         else:
             chosen, name, score = conf, conf_tag, conf_score
             direction = conf.direction
             reason = conf.describe()
+            # The confluence result carries the votes; take the level from
+            # whichever vote actually set the direction.
+            meta = next(
+                (v.meta for v in conf.votes if v.is_actionable and v.direction == direction and v.meta),
+                {},
+            )
 
         bias = conf.bias
         features = {
@@ -244,6 +252,10 @@ class SignalEngine:
             "profile": profile.name,
             "raw_score": round(chosen.score, 3),
             "weighted_score": round(score, 3),
+            # Used by revalidate() to re-check the premise without re-detecting
+            # a one-shot pattern that has already happened.
+            "invalidation_level": meta.get("level"),
+            "event_setup": bool(meta.get("event")),
         }
 
         class _R:
@@ -267,17 +279,34 @@ class SignalEngine:
         )
 
     # --------------------------- entry / settle ---------------------------
-    def _current_price(self, asset: str) -> Optional[float]:
+    def _price_at(self, asset: str, ts: datetime) -> Optional[float]:
+        """Close of the last candle that had closed at or before ``ts``.
+
+        Entry and expiry must be priced at their own moments. Using "latest
+        close" for both would compare a price against itself whenever the feed
+        buffer had not ticked over yet, settling a live trade as a flat loss.
+        """
         try:
-            df = self._feed_for(asset).get_candles(3)
+            df = self._feed_for(asset).get_candles(60)
             if df is None or df.empty:
                 return None
+            stamp = pd.Timestamp(ts)
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            if df.index.tz is None:
+                df = df.tz_localize("UTC")
+            at_or_before = df.index[df.index <= stamp]
+            if len(at_or_before):
+                return float(df.loc[at_or_before[-1], "close"])
             return float(df["close"].iloc[-1])
         except Exception:
             return None
 
+    def _current_price(self, asset: str) -> Optional[float]:
+        return self._price_at(asset, datetime.now(timezone.utc))
+
     def _enter(self, sig: PendingSignal, now: datetime) -> None:
-        price = self._current_price(sig.asset)
+        price = self._price_at(sig.asset, sig.entry_at)
         if price is None:
             self.scheduler.cancel(sig, "no price available at entry time")
             if sig.db_id is not None:
@@ -289,7 +318,7 @@ class SignalEngine:
         self.on_status(f"Entered {sig.asset} {sig.side} @ {price:.5f}")
 
     def _settle(self, sig: PendingSignal, now: datetime) -> None:
-        exit_price = self._current_price(sig.asset)
+        exit_price = self._price_at(sig.asset, sig.expiry_at)
         if exit_price is None or sig.entry_price is None:
             self.scheduler.mark_settled(sig)
             return
