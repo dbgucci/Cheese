@@ -29,6 +29,58 @@ def breakeven_win_rate(payout: float) -> float:
     return 1.0 / (1.0 + payout)
 
 
+# Filters for the Analytics view. Results from different builds must not be
+# silently pooled: a fix that removes fabricated losses cannot be evaluated
+# against a history that still contains them.
+FILTER_ALL = "All data"
+FILTER_THIS_BUILD = "This build only"
+FILTER_24H = "Last 24 hours"
+FILTER_7D = "Last 7 days"
+FILTER_OPTIONS = [FILTER_THIS_BUILD, FILTER_ALL, FILTER_24H, FILTER_7D]
+
+
+def filter_rows(
+    rows: list[dict[str, Any]], mode: str, version: str | None = None
+) -> list[dict[str, Any]]:
+    from datetime import datetime, timedelta, timezone
+
+    if mode == FILTER_ALL:
+        return rows
+
+    if mode == FILTER_THIS_BUILD:
+        if version is None:
+            from . import __version__ as version
+        return [r for r in rows if (r.get("app_version") or "") == version]
+
+    hours = 24 if mode == FILTER_24H else 24 * 7
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    out = []
+    for r in rows:
+        raw = r.get("entry_at")
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            out.append(r)
+    return out
+
+
+def describe_versions(rows: list[dict[str, Any]]) -> str:
+    """Summarise which builds produced the rows currently in view."""
+    counts: dict[str, int] = defaultdict(int)
+    for r in rows:
+        counts[r.get("app_version") or "before version tracking"] += 1
+    if not counts:
+        return "no trades"
+    parts = [f"{v} from {k}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+    return "; ".join(parts)
+
+
 @dataclass
 class Slice:
     key: str

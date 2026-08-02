@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from . import paths
+from . import __version__
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS candles (
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS signals (
     utc_hour        INTEGER,
     features        TEXT,
     status          TEXT NOT NULL DEFAULT 'pending',
-    cancel_reason   TEXT
+    cancel_reason   TEXT,
+    app_version     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -73,7 +75,13 @@ CREATE TABLE IF NOT EXISTS outcomes (
     reason          TEXT
 );
 
+"""
+
+# Indexes are applied *after* migrations, because an index on a column that a
+# migration is about to add would fail on an existing database.
+INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_signals_entry ON signals(entry_at);
+CREATE INDEX IF NOT EXISTS idx_signals_version ON signals(app_version);
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_candles_asset_ts ON candles(asset, ts);
 """
@@ -113,7 +121,21 @@ class Journal:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
+        self._conn.executescript(INDEXES)
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns to databases created by an older build.
+
+        CREATE TABLE IF NOT EXISTS silently leaves an existing table alone, so
+        a user upgrading in place keeps their old schema and their history.
+        Never drop or rewrite their data -- past trades stay queryable, they
+        just carry no version stamp, which is exactly how they are reported.
+        """
+        existing = {r["name"] for r in self._conn.execute("PRAGMA table_info(signals)")}
+        if "app_version" not in existing:
+            self._conn.execute("ALTER TABLE signals ADD COLUMN app_version TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -193,8 +215,9 @@ class Journal:
         with self._tx() as conn:
             cur = conn.execute(
                 "INSERT INTO signals(asset, direction, score, strategy, reason, detected_at, "
-                "entry_at, expiry_at, lead_seconds, session, utc_hour, features, status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'pending')",
+                "entry_at, expiry_at, lead_seconds, session, utc_hour, features, status, "
+                "app_version) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)",
                 (
                     asset,
                     direction,
@@ -208,6 +231,7 @@ class Journal:
                     session,
                     utc_hour,
                     json.dumps(features),
+                    __version__,
                 ),
             )
             return int(cur.lastrowid)
@@ -291,7 +315,7 @@ class Journal:
         """Signals joined to outcomes -- the table the analytics module reads."""
         cur = self._conn.execute(
             "SELECT s.id, s.asset, s.direction, s.score, s.strategy, s.session, s.utc_hour, "
-            "s.lead_seconds, s.features, s.entry_at, o.won, o.pnl, o.stake, o.payout, "
+            "s.lead_seconds, s.features, s.entry_at, s.app_version, o.won, o.pnl, o.stake, o.payout, "
             "o.reason AS outcome_reason, o.entry_price, o.exit_price "
             "FROM signals s JOIN outcomes o ON o.signal_id = s.id "
             "ORDER BY s.entry_at"

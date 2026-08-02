@@ -250,6 +250,17 @@ class AnalyticsPage(QWidget):
             )
         )
         header.addStretch(1)
+
+        self.filter_box = QComboBox()
+        self.filter_box.addItems(analytics.FILTER_OPTIONS)
+        self.filter_box.setMinimumWidth(150)
+        self.filter_box.setToolTip(
+            "Results from different builds are stored separately so a fix can be "
+            "measured. 'This build only' hides trades produced by older versions."
+        )
+        self.filter_box.currentTextChanged.connect(lambda _: self.refresh())
+        header.addWidget(self.filter_box)
+
         refresh = QPushButton("Refresh")
         refresh.setObjectName("Ghost")
         refresh.clicked.connect(self.refresh)
@@ -279,10 +290,16 @@ class AnalyticsPage(QWidget):
         self._table_widgets: list[QWidget] = []
 
     def refresh(self) -> None:
-        rows = self.window.journal.joined_results()
+        all_rows = self.window.journal.joined_results()
+        mode = self.filter_box.currentText() if hasattr(self, "filter_box") else analytics.FILTER_ALL
+        rows = analytics.filter_rows(all_rows, mode)
 
         tips = analytics.suggestions(rows, payout=PAYOUT)
-        self.summary_text.setText("\n\n".join(f"• {t}" for t in tips))
+        provenance = (
+            f"Showing: {mode} — {len(rows)} of {len(all_rows)} logged trades "
+            f"({analytics.describe_versions(rows)})."
+        )
+        self.summary_text.setText(provenance + "\n\n" + "\n\n".join(f"• {t}" for t in tips))
 
         for w in self._table_widgets:
             w.setParent(None)
