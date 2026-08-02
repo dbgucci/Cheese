@@ -757,6 +757,16 @@ class MainWindow(QMainWindow):
             self.set_status("Engine stopped")
             return
 
+        # Drop any cached Pocket Option session so restarting the engine after
+        # pasting a fresh SSID actually reconnects instead of reusing a dead one.
+        if self.settings.data_source == "pocket_option":
+            try:
+                from ..data.pocket_option import reset_clients
+
+                reset_clients()
+            except ImportError:
+                pass
+
         try:
             self.engine = SignalEngine(
                 settings=self.settings,
