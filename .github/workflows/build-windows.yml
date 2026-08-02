@@ -26,6 +26,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
           pip install PySide6 pyinstaller
+          # Must be present at build time: a frozen exe cannot load packages
+          # installed on the user's machine afterwards.
+          pip install binaryoptionstoolsv2
 
       - name: Run tests
         run: |

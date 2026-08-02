@@ -8,16 +8,33 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 # SPECPATH is injected by PyInstaller; fall back to cwd when linted standalone.
 ROOT = Path(globals().get("SPECPATH", ".")).resolve().parent
 
 block_cipher = None
 
+# The Pocket Option client is a compiled Rust/PyO3 extension with subpackages
+# and a native .pyd. PyInstaller's static analysis does not follow it, so it
+# must be collected explicitly -- otherwise the frozen exe raises
+# "binaryoptionstoolsv2 is not installed" no matter what the user pip installs
+# on their machine, because a frozen app cannot see site-packages at all.
+try:
+    po_datas, po_binaries, po_hiddenimports = collect_all("BinaryOptionsToolsV2")
+except Exception:
+    # Building without the optional live-feed dependency installed: the app
+    # still builds and runs, with the Pocket Option feed unavailable.
+    po_datas, po_binaries, po_hiddenimports = [], [], []
+    print("WARNING: BinaryOptionsToolsV2 not found; the built exe will not "
+          "support the live Pocket Option feed. Run "
+          "`pip install binaryoptionstoolsv2` before building to include it.")
+
 a = Analysis(
     [str(ROOT / "run_app.py")],
     pathex=[str(ROOT / "src")],
-    binaries=[],
-    datas=[],
+    binaries=po_binaries,
+    datas=po_datas,
     hiddenimports=[
         "cheese_signals",
         "cheese_signals.gui",
@@ -27,9 +44,11 @@ a = Analysis(
         "cheese_signals.data",
         "cheese_signals.data.synthetic",
         "cheese_signals.data.csv_feed",
+        # Imported lazily at runtime, so static analysis never sees it.
+        "cheese_signals.data.pocket_option",
         "cheese_signals.notifiers",
         "cheese_signals.notifiers.telegram",
-    ],
+    ] + po_hiddenimports,
     hookspath=[],
     runtime_hooks=[],
     # Qt ships a lot we never touch; excluding it keeps the exe substantially

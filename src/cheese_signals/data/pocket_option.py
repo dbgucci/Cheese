@@ -20,10 +20,41 @@ Option's own servers via that library.
 from __future__ import annotations
 
 import os
+import sys
 
 import pandas as pd
 
 from .base import CandleFeed, validate_candles
+
+
+def _missing_dependency_message(exc: ImportError) -> str:
+    """Explain the failure differently for a frozen exe vs. a source checkout.
+
+    Telling a user of the packaged .exe to "pip install" is actively
+    misleading: a frozen application cannot see site-packages, so no amount of
+    installing on their machine will ever fix it. That case needs a rebuild.
+    """
+    if getattr(sys, "frozen", False):
+        return (
+            "The live Pocket Option feed is not available in this build of the app.\n\n"
+            "This cannot be fixed by installing anything on your PC -- a packaged .exe "
+            "only contains the libraries that were bundled when it was built, and this "
+            "one was built without the Pocket Option client.\n\n"
+            "Fixes:\n"
+            "  * Download a newer build (Actions tab -> Build Windows EXE), or\n"
+            "  * Rebuild with build_windows.bat, which now installs "
+            "'binaryoptionstoolsv2' before packaging.\n\n"
+            "In the meantime, set Data source to 'synthetic' in Settings to keep "
+            f"using the app.\n\n(underlying error: {exc})"
+        )
+    return (
+        "The live Pocket Option feed needs the 'binaryoptionstoolsv2' package.\n\n"
+        f"Install it into the SAME Python that runs this app:\n"
+        f"    {sys.executable} -m pip install binaryoptionstoolsv2\n\n"
+        "Installing with a bare `pip install` often targets a different Python "
+        "installation or a different virtualenv, which is the usual reason it still "
+        f"appears missing after installing.\n\n(underlying error: {exc})"
+    )
 
 
 class PocketOptionFeed(CandleFeed):
@@ -31,10 +62,7 @@ class PocketOptionFeed(CandleFeed):
         try:
             from BinaryOptionsToolsV2.pocketoption import PocketOption
         except ImportError as exc:
-            raise ImportError(
-                "binaryoptionstoolsv2 is not installed. Run "
-                "`pip install binaryoptionstoolsv2` to use the live Pocket Option feed."
-            ) from exc
+            raise ImportError(_missing_dependency_message(exc)) from exc
 
         ssid = ssid or os.environ.get("POCKET_OPTION_SSID")
         if not ssid:

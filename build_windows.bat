@@ -42,6 +42,18 @@ if errorlevel 1 goto :installfail
 pip install PySide6 pyinstaller
 if errorlevel 1 goto :installfail
 
+REM The live Pocket Option feed. This must be installed BEFORE building:
+REM a frozen exe cannot load packages installed later, so if this is
+REM missing at build time the exe will only support the synthetic feed.
+pip install binaryoptionstoolsv2
+if errorlevel 1 (
+    echo.
+    echo WARNING: binaryoptionstoolsv2 could not be installed.
+    echo The app will still build, but the live Pocket Option feed will not
+    echo be available in it - only the "synthetic" practice feed.
+    echo.
+)
+
 echo.
 echo [3/4] Building executable (this takes a few minutes)...
 pyinstaller packaging\CheeseSignals.spec --noconfirm
