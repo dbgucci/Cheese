@@ -120,6 +120,60 @@ def loss_reasons(rows: list[dict[str, Any]], limit: int = 10) -> list[tuple[str,
     return sorted(tally.items(), key=lambda kv: -kv[1])[:limit]
 
 
+def drift_check(rows: list[dict[str, Any]], payout: float = 0.85) -> list[str]:
+    """Compare the strategy against always-BUY / always-SELL on the same windows.
+
+    Without this, a directional market makes a useless signal look skilful. If
+    price rose in 65% of the minutes you traded, every BUY looks smart and
+    every SELL looks broken -- and "disable SELL" is then exactly the wrong
+    conclusion, because the next session's drift can run the other way.
+
+    A strategy only demonstrates skill by beating the base rate of the windows
+    it chose, not by beating 50%.
+    """
+    usable = [
+        r for r in rows
+        if r.get("entry_price") is not None
+        and r.get("exit_price") is not None
+        and r["entry_price"] != r["exit_price"]
+    ]
+    if len(usable) < MIN_SAMPLE:
+        return []
+
+    n = len(usable)
+    rose = sum(1 for r in usable if r["exit_price"] > r["entry_price"])
+    up_rate = rose / n
+    actual = sum(1 for r in usable if r.get("won")) / n
+
+    def net(wins: int) -> float:
+        return wins * payout - (n - wins)
+
+    out = [
+        f"Price rose in {up_rate:.0%} of the {n} minutes you traded "
+        f"(a neutral market would be ~50%)."
+    ]
+    best_side = "BUY" if up_rate >= 0.5 else "SELL"
+    best_wins = rose if up_rate >= 0.5 else n - rose
+    out.append(
+        f"Benchmark: always {best_side} on these same windows would have won "
+        f"{best_wins / n:.1%} ({net(best_wins):+.1f} units). "
+        f"Your signals won {actual:.1%} ({net(int(actual * n)):+.1f} units)."
+    )
+    if actual < best_wins / n:
+        out.append(
+            "Your signals did NOT beat simply always taking the drifting side, so this "
+            "sample shows no directional skill -- and copying the drift is not a strategy, "
+            "because it reverses without warning."
+        )
+    if abs(up_rate - 0.5) > 0.08:
+        out.append(
+            "Because the sample is directionally skewed, treat per-session and per-pair "
+            "win rates with suspicion: they mostly reflect which way price happened to "
+            "move, not which conditions work."
+        )
+    return out
+
+
 def suggestions(rows: list[dict[str, Any]], payout: float = 0.85) -> list[str]:
     """Conservative, sample-size-aware tuning advice. Silent when data is thin."""
     if len(rows) < MIN_SAMPLE:
@@ -135,6 +189,10 @@ def suggestions(rows: list[dict[str, Any]], payout: float = 0.85) -> list[str]:
         f"Overall: {ov.trades} trades, {ov.win_rate:.1%} win rate vs {be:.1%} needed to break even "
         f"({ov.pnl:+.2f} net)."
     )
+
+    # Drift first: it determines whether the per-slice numbers below mean
+    # anything at all.
+    out.extend(drift_check(rows, payout=payout))
 
     bd = breakdown(rows)
 

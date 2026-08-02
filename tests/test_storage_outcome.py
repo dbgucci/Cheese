@@ -160,3 +160,51 @@ def test_overlap_detection():
     assert sessions.session_label(
         datetime(2026, 8, 3, 13, 0, tzinfo=timezone.utc)
     ) == "london_ny_overlap"
+
+
+# ------------------------------ drift check ------------------------------
+def _priced_rows(n, up_fraction, win_fraction):
+    """Rows with entry/exit prices so drift_check can measure the base rate."""
+    out = []
+    for i in range(n):
+        rose = i < int(n * up_fraction)
+        won = i < int(n * win_fraction)
+        out.append({
+            "asset": "EURUSD_otc", "direction": 1, "score": 0.7,
+            "strategy": "liquidity_sweep", "session": "london", "utc_hour": 12,
+            "lead_seconds": 120, "won": int(won),
+            "pnl": 8.5 if won else -10.0,
+            "outcome_reason": "x",
+            "entry_price": 1.1000,
+            "exit_price": 1.1005 if rose else 1.0995,
+        })
+    return out
+
+
+def test_drift_check_flags_a_directional_sample():
+    # Price rose in 65% of windows, strategy only won 48% -> no skill.
+    tips = analytics.drift_check(_priced_rows(100, up_fraction=0.65, win_fraction=0.48))
+    joined = " ".join(tips)
+    assert "65%" in joined
+    assert "always BUY" in joined
+    assert "did NOT beat" in joined
+    assert "reflect which way price happened to move" in joined
+
+
+def test_drift_check_quiet_on_a_balanced_sample():
+    tips = analytics.drift_check(_priced_rows(100, up_fraction=0.50, win_fraction=0.60))
+    joined = " ".join(tips)
+    assert "did NOT beat" not in joined
+    assert "suspicion" not in joined
+
+
+def test_drift_check_needs_a_sample():
+    assert analytics.drift_check(_priced_rows(5, 0.65, 0.48)) == []
+
+
+def test_drift_check_ignores_flat_settlements():
+    rows = _priced_rows(40, 0.5, 0.5)
+    for r in rows[:10]:
+        r["exit_price"] = r["entry_price"]      # bug-contaminated flats
+    tips = analytics.drift_check(rows)
+    assert "30 minutes you traded" in " ".join(tips)
