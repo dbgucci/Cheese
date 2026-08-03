@@ -43,6 +43,11 @@ from .widgets import EmptyState, SignalCard, StatCard, StatusDot
 
 PAYOUT = 0.85
 
+# Row caps. The journal is meant to grow for years; the views are not meant to
+# read all of it. History shows a page, Analytics analyses a recent window.
+HISTORY_ROWS = 500
+ANALYTICS_ROWS = 20_000
+
 # Vertical chrome of a _card() with a title: top+bottom margins (16+16),
 # the section-title row, and the layout spacing between title and content.
 _CARD_CHROME_H = 16 + 16 + 20 + 11
@@ -188,8 +193,9 @@ class HistoryPage(QWidget):
         root.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        rows = self.window.journal.joined_results()
-        rows = list(reversed(rows))[:500]
+        # Only fetch the page being displayed. Loading the whole journal to
+        # render 500 rows is what made the app slow as history grew.
+        rows = list(reversed(self.window.journal.joined_results(limit=HISTORY_ROWS)))
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             won = bool(row.get("won"))
@@ -290,7 +296,7 @@ class AnalyticsPage(QWidget):
         self._table_widgets: list[QWidget] = []
 
     def refresh(self) -> None:
-        all_rows = self.window.journal.joined_results()
+        all_rows = self.window.journal.joined_results(limit=ANALYTICS_ROWS)
         mode = self.filter_box.currentText() if hasattr(self, "filter_box") else analytics.FILTER_ALL
         rows = analytics.filter_rows(all_rows, mode)
 
@@ -693,6 +699,7 @@ class MainWindow(QMainWindow):
 
         self.settings = Settings.load()
         self.journal = storage.Journal()
+        self._history_stale = False
         self.engine: SignalEngine | None = None
 
         root = QWidget()
@@ -794,6 +801,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         if index == 1:
             self.history_page.refresh()
+            self._history_stale = False
         elif index == 2:
             self.analytics_page.refresh()
 
@@ -875,32 +883,34 @@ class MainWindow(QMainWindow):
 
     def _on_result(self, result) -> None:
         self.set_status(f"{result.result_word}: {result.signal.asset} ({result.pnl:+.2f})")
-        self.history_page.refresh()
         self._refresh_stats()
+        # History and Analytics rebuild when their tab is opened rather than on
+        # every settled trade; redrawing a 500-row table per result is wasted
+        # work while the user is looking at Live Signals.
+        self._history_stale = True
 
     def _tick_ui(self) -> None:
         self.clock.setText(f"{datetime.now(timezone.utc):%H:%M:%S} UTC")
         self.live_page.refresh()
 
     def _refresh_stats(self) -> None:
-        counts = self.journal.summary_counts()
-        rows = self.journal.joined_results()
-        ov = analytics.overall(rows)
+        # All aggregates come from SQL: constant work regardless of history size.
+        st = self.journal.stats()
         be = analytics.breakeven_win_rate(PAYOUT)
 
-        self.live_page.stat_pending.set_value(str(counts["pending"]))
+        self.live_page.stat_pending.set_value(str(st["pending"]))
         today = datetime.now(timezone.utc).date().isoformat()
-        todays = sum(
-            1 for s in self.journal.recent_signals(500) if s.detected_at.startswith(today)
-        )
-        self.live_page.stat_today.set_value(str(todays))
-        if ov.trades:
-            colour = theme.BUY if ov.win_rate >= be else theme.SELL
+        self.live_page.stat_today.set_value(str(self.journal.count_signals_since(today)))
+
+        if st["trades"]:
+            colour = theme.BUY if st["win_rate"] >= be else theme.SELL
             self.live_page.stat_winrate.set_value(
-                f"{ov.win_rate:.1%}", f"break-even {be:.1%} · {ov.trades} trades", colour
+                f"{st['win_rate']:.1%}",
+                f"break-even {be:.1%} · {int(st['trades'])} trades",
+                colour,
             )
             self.live_page.stat_pnl.set_value(
-                f"{ov.pnl:+.2f}", accent=theme.BUY if ov.pnl >= 0 else theme.SELL
+                f"{st['pnl']:+.2f}", accent=theme.BUY if st["pnl"] >= 0 else theme.SELL
             )
         else:
             self.live_page.stat_winrate.set_value("--", f"break-even {be:.1%}")

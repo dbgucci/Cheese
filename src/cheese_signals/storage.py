@@ -120,10 +120,19 @@ class Journal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # WAL keeps readers from blocking on writers and is markedly faster
+        # for the steady trickle of small writes this app makes. NORMAL sync
+        # is the standard pairing: durable across app crashes, and the only
+        # exposure is an OS-level crash losing the last transaction, which for
+        # a trade journal is an acceptable trade for not stalling the UI.
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
         self._conn.executescript(SCHEMA)
         self._migrate()
         self._conn.executescript(INDEXES)
         self._conn.commit()
+        self._last_candle_ts: dict[str, str] = {}
 
     def _migrate(self) -> None:
         """Add columns to databases created by an older build.
@@ -151,7 +160,24 @@ class Journal:
 
     # ----------------------------- candles ------------------------------
     def record_candles(self, asset: str, df) -> int:
-        """Upsert candles. Returns the number of rows written."""
+        """Upsert candles. Returns the number of rows written.
+
+        Only candles newer than the newest already stored are written. The
+        engine hands over a 50-candle tail every minute, so writing all of it
+        re-wrote 49 unchanged rows per asset per minute -- roughly fifty times
+        the necessary write volume, for nothing.
+        """
+        if df is None or len(df) == 0:
+            return 0
+
+        watermark = self._last_candle_ts.get(asset)
+        if watermark is None:
+            got = self._conn.execute(
+                "SELECT MAX(ts) FROM candles WHERE asset = ?", (asset,)
+            ).fetchone()[0]
+            watermark = got or ""
+            self._last_candle_ts[asset] = watermark
+
         rows = [
             (
                 asset,
@@ -164,8 +190,10 @@ class Journal:
             )
             for ts, r in df.iterrows()
         ]
+        rows = [r for r in rows if r[1] > watermark]
         if not rows:
             return 0
+        self._last_candle_ts[asset] = max(r[1] for r in rows)
         with self._tx() as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO candles(asset, ts, open, high, low, close, volume) "
@@ -311,21 +339,67 @@ class Journal:
             )
             conn.execute("UPDATE signals SET status = 'settled' WHERE id = ?", (signal_id,))
 
-    def joined_results(self) -> list[dict[str, Any]]:
-        """Signals joined to outcomes -- the table the analytics module reads."""
-        cur = self._conn.execute(
+    def joined_results(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
+        """Signals joined to outcomes -- the table the analytics module reads.
+
+        ``limit`` returns the most recent N trades (still oldest-first). Views
+        that only display a page of history must pass one; loading the whole
+        journal to show 500 rows is what made the app slow down over time.
+        """
+        sql = (
             "SELECT s.id, s.asset, s.direction, s.score, s.strategy, s.session, s.utc_hour, "
             "s.lead_seconds, s.features, s.entry_at, s.app_version, o.won, o.pnl, o.stake, o.payout, "
             "o.reason AS outcome_reason, o.entry_price, o.exit_price "
             "FROM signals s JOIN outcomes o ON o.signal_id = s.id "
-            "ORDER BY s.entry_at"
         )
+        if limit:
+            sql += "ORDER BY s.entry_at DESC LIMIT ?"
+            cur = self._conn.execute(sql, (limit,))
+        else:
+            sql += "ORDER BY s.entry_at"
+            cur = self._conn.execute(sql)
         out = []
         for r in cur.fetchall():
             d = dict(r)
             d["features"] = json.loads(d.get("features") or "{}")
             out.append(d)
+        if limit:
+            out.reverse()   # DESC fetch, returned oldest-first like the unlimited call
         return out
+
+    def stats(self) -> dict[str, float]:
+        """Headline numbers computed in SQL.
+
+        The GUI used to derive these by loading every settled trade into
+        Python on each update, which grew linearly and stalled the interface
+        as history accumulated. Aggregates belong in the database.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(won), 0) AS wins, "
+            "COALESCE(SUM(pnl), 0.0) AS pnl "
+            "FROM outcomes"
+        ).fetchone()
+        pending = self._conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE status IN ('pending','active')"
+        ).fetchone()[0]
+        n = int(row["n"])
+        return {
+            "trades": n,
+            "wins": int(row["wins"]),
+            "losses": n - int(row["wins"]),
+            "pnl": float(row["pnl"]),
+            "win_rate": (int(row["wins"]) / n) if n else 0.0,
+            "pending": int(pending),
+        }
+
+    def count_signals_since(self, iso_prefix: str) -> int:
+        """Signals detected on a given day, counted in SQL."""
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM signals WHERE detected_at >= ?", (iso_prefix,)
+            ).fetchone()[0]
+        )
 
     def summary_counts(self) -> dict[str, int]:
         c = self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]
