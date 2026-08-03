@@ -44,6 +44,10 @@ class Settings:
     # silences the strategy for long stretches; too wide and it fires on a
     # pullback that is long finished. Watch the Diagnostics tab to tune it.
     fractal_max_age: int = 5
+    # Only trade when ADX sits in this band. Defaults are wide open (no
+    # filtering); narrow them only on evidence from your own Analytics tab.
+    adx_min: float = 0.0
+    adx_max: float = 100.0
     expiry_min_minutes: int = 1
     expiry_max_minutes: int = 5
 

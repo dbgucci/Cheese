@@ -566,6 +566,15 @@ class SettingsPage(QWidget):
         )
         grid2.addWidget(QLabel("Fractal trigger window"), 2, 0)
         grid2.addWidget(self.fractal_age, 2, 1)
+
+        self.adx_min = QDoubleSpinBox()
+        self.adx_min.setRange(0, 100); self.adx_min.setValue(getattr(s, "adx_min", 0.0))
+        self.adx_max = QDoubleSpinBox()
+        self.adx_max.setRange(0, 100); self.adx_max.setValue(getattr(s, "adx_max", 100.0))
+        grid2.addWidget(QLabel("Only trade when ADX is at least"), 3, 0)
+        grid2.addWidget(self.adx_min, 3, 1)
+        grid2.addWidget(QLabel("...and at most"), 4, 0)
+        grid2.addWidget(self.adx_max, 4, 1)
         grid2.setColumnStretch(0, 1)
         lay.addLayout(grid2)
         body.addWidget(card)
@@ -856,6 +865,8 @@ class SettingsPage(QWidget):
             expiry_min_minutes=self.expiry_min.value(),
             expiry_max_minutes=max(self.expiry_max.value(), self.expiry_min.value()),
             fractal_max_age=self.fractal_age.value(),
+            adx_min=self.adx_min.value(),
+            adx_max=self.adx_max.value(),
             max_stake=self.max_stake.value(),
             max_concurrent_trades=self.max_concurrent.value(),
             max_daily_loss=self.max_daily_loss.value(),

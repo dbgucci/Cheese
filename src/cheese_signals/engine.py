@@ -350,7 +350,12 @@ class SignalEngine:
 
     def _evaluate_trend(self, df: pd.DataFrame, profile) -> tuple:
         """Heikin Ashi trend continuation, scored on real prices."""
-        sig, checks = trend_mod.explain(df, fractal_max_age=self.settings.fractal_max_age)
+        sig, checks = trend_mod.explain(
+            df,
+            fractal_max_age=self.settings.fractal_max_age,
+            adx_min=getattr(self.settings, 'adx_min', 0.0),
+            adx_max=getattr(self.settings, 'adx_max', 100.0),
+        )
 
         high, low, close = df["high"], df["low"], df["close"]
         adx_val = float(ind.adx(high, low, close).iloc[-1])

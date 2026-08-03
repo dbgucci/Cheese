@@ -94,13 +94,18 @@ def cmd_lab(args: argparse.Namespace) -> None:
             print("  " + lab.baseline(df, e, payout=args.payout))
         print()
 
-        results = lab.sweep(
-            df, strategies=strategies, expiries=expiries,
-            payout=args.payout, lead_minutes=args.lead, min_score=args.min_score,
-        )
+        leads = args.lead if args.lead else [0]
+        results = []
+        for lead in leads:
+            for r in lab.sweep(
+                df, strategies=strategies, expiries=expiries,
+                payout=args.payout, lead_minutes=lead, min_score=args.min_score,
+            ):
+                r.lead = lead
+                results.append(r)
         for r in sorted(results, key=lambda r: -r.pnl):
             if r.trades:
-                print("  " + r.line(args.payout))
+                print(f"  lead {getattr(r, 'lead', 0)}min  " + r.line(args.payout))
 
         tradeable = [r for r in results if r.trades >= 30]
         if tradeable:
@@ -199,8 +204,8 @@ def main() -> None:
     lab.add_argument("--expiry", type=int, action="append",
                      help="expiry in minutes (repeatable); default: 1-5")
     lab.add_argument("--payout", type=float, default=0.85)
-    lab.add_argument("--lead", type=int, default=0,
-                     help="advance-warning delay in minutes, as used live")
+    lab.add_argument("--lead", type=int, action="append",
+                     help="advance-warning delay in minutes (repeatable) to compare")
     lab.add_argument("--min-score", type=float, default=0.0)
     lab.set_defaults(func=cmd_lab)
 

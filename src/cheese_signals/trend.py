@@ -149,6 +149,17 @@ def explain(df: pd.DataFrame, **kwargs) -> tuple[Signal, list[Check]]:
             + ("" if ok else f", older than the {max_age}-bar trigger window"),
         ))
 
+    adx_min = kwargs.get("adx_min", 0.0)
+    adx_max = kwargs.get("adx_max", 100.0)
+    if adx_min > 0.0 or adx_max < 100.0:
+        adx_now = float(ind.adx(high, low, close).iloc[-1])
+        in_band = adx_now == adx_now and adx_min <= adx_now <= adx_max
+        checks.append(Check(
+            "ADX band", in_band,
+            f"ADX {adx_now:.1f}"
+            + ("" if in_band else f" outside the {adx_min:.0f}-{adx_max:.0f} band"),
+        ))
+
     sig = trend_continuation(df, **kwargs)
     if sig.is_actionable:
         checks.append(Check("result", True, f"{'BUY' if sig.direction == UP else 'SELL'} at score {sig.score:.2f}"))
@@ -165,6 +176,8 @@ def trend_continuation(
     keltner_mult: float = KELTNER_MULT,
     fractal_period: int = FRACTAL_PERIOD,
     fractal_max_age: int = 2,
+    adx_min: float = 0.0,
+    adx_max: float = 100.0,
 ) -> Signal:
     """Score the most recent closed candle. Returns FLAT when nothing lines up.
 
@@ -192,6 +205,14 @@ def trend_continuation(
     ema200 = ind.ema(close, ema_trend)
     frac = ind.fractals(high, low, period=fractal_period)
     atr_now = float(ind.atr(high, low, close).iloc[-1])
+
+    # Optional ADX band. Logged results suggested this setup performs very
+    # differently by trend strength, so the band is exposed rather than
+    # assumed -- see the Analytics tab before narrowing it.
+    if adx_min > 0.0 or adx_max < 100.0:
+        adx_now = float(ind.adx(high, low, close).iloc[-1])
+        if adx_now != adx_now or not (adx_min <= adx_now <= adx_max):
+            return Signal(FLAT, 0.0, f"ADX {adx_now:.1f} outside the {adx_min:.0f}-{adx_max:.0f} band")
 
     ha_close_now = float(ha["close"].iloc[-1])
     mid_now = float(kc["mid"].iloc[-1])
