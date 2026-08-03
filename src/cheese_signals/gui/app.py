@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -100,6 +101,13 @@ class LivePage(QWidget):
             )
         )
         header.addStretch(1)
+
+        self.halt_btn = QPushButton("Halt Trading")
+        self.halt_btn.setObjectName("Danger")
+        self.halt_btn.setToolTip("Immediately stop placing new orders. Signals keep running.")
+        self.halt_btn.clicked.connect(self.window.toggle_halt)
+        self.halt_btn.setVisible(False)
+        header.addWidget(self.halt_btn)
 
         self.start_btn = QPushButton("Start Engine")
         self.start_btn.setObjectName("Primary")
@@ -647,6 +655,61 @@ class SettingsPage(QWidget):
         lay.addWidget(h)
         body.addWidget(card)
 
+        # ---------------- autotrading ----------------
+        card, lay = _card("Autotrading")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(11)
+
+        self.trade_mode = QComboBox()
+        self.trade_mode.addItems(["off", "paper", "live"])
+        self.trade_mode.setCurrentText(getattr(s, "trade_mode", "off"))
+        grid.addWidget(QLabel("Execution mode"), 0, 0)
+        grid.addWidget(self.trade_mode, 0, 1)
+
+        self.max_stake = QDoubleSpinBox()
+        self.max_stake.setRange(1, 10000)
+        self.max_stake.setValue(getattr(s, "max_stake", 50.0))
+        self.max_stake.setPrefix("$ ")
+        grid.addWidget(QLabel("Hard cap per trade"), 1, 0)
+        grid.addWidget(self.max_stake, 1, 1)
+
+        self.max_concurrent = QSpinBox()
+        self.max_concurrent.setRange(1, 20)
+        self.max_concurrent.setValue(getattr(s, "max_concurrent_trades", 3))
+        grid.addWidget(QLabel("Max trades open at once"), 2, 0)
+        grid.addWidget(self.max_concurrent, 2, 1)
+
+        self.max_daily_loss = QDoubleSpinBox()
+        self.max_daily_loss.setRange(1, 100000)
+        self.max_daily_loss.setValue(getattr(s, "max_daily_loss", 100.0))
+        self.max_daily_loss.setPrefix("$ ")
+        grid.addWidget(QLabel("Stop trading after losing"), 3, 0)
+        grid.addWidget(self.max_daily_loss, 3, 1)
+
+        self.min_balance = QDoubleSpinBox()
+        self.min_balance.setRange(0, 100000)
+        self.min_balance.setValue(getattr(s, "min_balance", 50.0))
+        self.min_balance.setPrefix("$ ")
+        grid.addWidget(QLabel("Never trade below balance"), 4, 0)
+        grid.addWidget(self.min_balance, 4, 1)
+        grid.setColumnStretch(0, 1)
+        lay.addLayout(grid)
+
+        trade_note = QLabel(
+            "off — signals only, nothing is placed.\n"
+            "paper — simulated trades against the real feed with a simulated balance. "
+            "This is how you find out whether the strategy is worth trading, at no risk.\n"
+            "live — places REAL orders with REAL money on your Pocket Option account.\n\n"
+            "Every order is checked against the caps above first, and trading halts "
+            "automatically when the daily loss limit is reached. Do not switch to live "
+            "until the Analytics tab shows an edge over a meaningful number of trades."
+        )
+        trade_note.setObjectName("Hint")
+        trade_note.setWordWrap(True)
+        lay.addWidget(trade_note)
+        body.addWidget(card)
+
         # ---------------- risk ----------------
         card, lay = _card("Risk")
         grid = QGridLayout()
@@ -761,13 +824,42 @@ class SettingsPage(QWidget):
         (QMessageBox.information if ok else QMessageBox.warning)(self, "Telegram", msg)
 
     def save(self) -> None:
+        mode = self.trade_mode.currentText()
+        confirmed = getattr(self.window.settings, "live_confirmed", False)
+        if mode == "live" and not confirmed:
+            # Real money needs a deliberate act, not a dropdown selection.
+            typed, ok = QInputDialog.getText(
+                self, "Confirm live trading",
+                "This will place REAL orders with REAL money on your Pocket Option\n"
+                "account, automatically, without asking again.\n\n"
+                "Your logged results do not yet show a proven edge.\n\n"
+                'Type  TRADE LIVE  to confirm, or Cancel to stay in paper mode:',
+            )
+            if not ok or typed.strip() != "TRADE LIVE":
+                self.trade_mode.setCurrentText("paper")
+                mode = "paper"
+                QMessageBox.information(
+                    self, "Autotrading",
+                    "Not confirmed — left in paper mode.",
+                )
+            else:
+                confirmed = True
+        if mode != "live":
+            confirmed = False
+
         assets = [a.strip() for a in self.assets_edit.toPlainText().splitlines() if a.strip()]
         self.window.settings.update(
+            trade_mode=mode,
+            live_confirmed=confirmed,
             strategy=self.strategy_box.currentText(),
             adaptive_expiry=self.adaptive_expiry.isChecked(),
             expiry_min_minutes=self.expiry_min.value(),
             expiry_max_minutes=max(self.expiry_max.value(), self.expiry_min.value()),
             fractal_max_age=self.fractal_age.value(),
+            max_stake=self.max_stake.value(),
+            max_concurrent_trades=self.max_concurrent.value(),
+            max_daily_loss=self.max_daily_loss.value(),
+            min_balance=self.min_balance.value(),
             lead_minutes=self.lead.value(),
             expiry_minutes=self.expiry.value(),
             cooldown_minutes=self.cooldown.value(),
@@ -942,6 +1034,7 @@ class MainWindow(QMainWindow):
             self.engine = None
             self.live_page.start_btn.setText("Start Engine")
             self.live_page.start_btn.setObjectName("Primary")
+            self.live_page.halt_btn.setVisible(False)
             self.status_dot.set_state(False)
             self.sidebar_note.setText("Engine stopped")
             self.set_status("Engine stopped")
@@ -958,6 +1051,16 @@ class MainWindow(QMainWindow):
                 pass
 
         try:
+            executor = None
+            mode = getattr(self.settings, "trade_mode", "off")
+            if mode != "off":
+                from .. import execution
+                client = None
+                if mode == "live":
+                    feed = self._feed_factory(self.settings.assets[0])
+                    client = getattr(feed, "_client", None)
+                executor = execution.build_executor(mode, self.settings, client)
+
             self.engine = SignalEngine(
                 settings=self.settings,
                 journal=self.journal,
@@ -970,6 +1073,8 @@ class MainWindow(QMainWindow):
                 on_status=lambda m: self.sig_status.emit(m),
                 on_error=lambda m: self.sig_status.emit(f"Error: {m.splitlines()[0]}"),
             )
+            self.engine.executor = executor
+            self.engine.trade_mode = mode
             self.engine.start()
         except Exception as exc:
             QMessageBox.critical(self, "Engine", f"Could not start:\n{exc}")
@@ -977,11 +1082,25 @@ class MainWindow(QMainWindow):
             return
 
         self.live_page.start_btn.setText("Stop Engine")
+        self.live_page.halt_btn.setVisible(mode != "off")
         self.status_dot.set_state(True)
         self.sidebar_note.setText(f"Watching {len(self.settings.assets)} pairs")
         self.set_status("Engine running")
 
     # ----------------------------- callbacks -----------------------------
+    def toggle_halt(self) -> None:
+        eng = self.engine
+        if eng is None:
+            return
+        if eng.safety.state.halted:
+            eng.safety.resume()
+            self.live_page.halt_btn.setText("Halt Trading")
+            self.set_status("Trading resumed")
+        else:
+            eng.safety.halt("halted manually")
+            self.live_page.halt_btn.setText("Resume Trading")
+            self.set_status("Trading halted — no new orders will be placed")
+
     def _on_signal(self, signal) -> None:
         self.live_page.add_signal(signal)
         self.set_status(f"Signal: {signal.asset} {signal.side} at {signal.entry_at:%H:%M:%S} UTC")

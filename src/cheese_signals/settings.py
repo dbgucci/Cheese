@@ -58,6 +58,17 @@ class Settings:
     restrict_to_sessions: bool = False
     allowed_sessions: list[str] = field(default_factory=list)
 
+    # --- execution (autotrading) ---
+    # Default is off. Execution never turns itself on: paper is an explicit
+    # choice, and live additionally requires live_confirmed, which the UI only
+    # sets after a typed confirmation.
+    trade_mode: str = "off"          # off | paper | live
+    live_confirmed: bool = False
+    max_stake: float = 50.0
+    max_concurrent_trades: int = 3
+    max_daily_loss: float = 100.0
+    min_balance: float = 50.0
+
     # --- risk ---
     account_balance: float = 500.0
     risk_per_trade: float = 0.02

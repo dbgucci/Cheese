@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from . import confluence, diagnostics, outcome as outcome_mod, profiles, sessions, storage
+from . import confluence, diagnostics, execution, outcome as outcome_mod, profiles, sessions, storage
 from . import indicators as ind
 from . import strategies as strat
 from . import trend as trend_mod
@@ -58,6 +58,19 @@ class SignalEngine:
         self.on_error = on_error or (lambda *a, **k: None)
         self.on_trace = on_trace or (lambda *a, **k: None)
         self.traces = diagnostics.TraceLog()
+
+        # Execution is opt-in and off by default; a signal engine must never
+        # start placing trades as a side effect of running.
+        self.trade_mode = getattr(settings, "trade_mode", execution.MODE_OFF)
+        self.safety = execution.SafetyGate(execution.SafetyConfig(
+            max_stake=getattr(settings, "max_stake", 50.0),
+            max_concurrent=getattr(settings, "max_concurrent_trades", 3),
+            max_trades_per_hour=settings.max_trades_per_hour,
+            max_daily_loss=getattr(settings, "max_daily_loss", 100.0),
+            min_balance=getattr(settings, "min_balance", 50.0),
+            live_confirmed=getattr(settings, "live_confirmed", False),
+        ))
+        self.executor = None
 
         self.scheduler = SignalScheduler(
             lead_minutes=settings.lead_minutes,
@@ -416,6 +429,40 @@ class SignalEngine:
         if sig.db_id is not None:
             self.journal.set_signal_status(sig.db_id, ACTIVE)
         self.on_status(f"Entered {sig.asset} {sig.side} @ {price:.5f}")
+        self._maybe_place_order(sig)
+
+    def _maybe_place_order(self, sig: PendingSignal) -> None:
+        """Place a trade for a signal, if execution is enabled and safe."""
+        if self.executor is None or self.trade_mode == execution.MODE_OFF:
+            return
+
+        stake = round(self.settings.account_balance * self.settings.risk_per_trade, 2)
+        stake = min(stake, self.safety.config.max_stake)
+        balance = self.executor.balance()
+
+        ok, why = self.safety.check(self.trade_mode, stake, balance)
+        if not ok:
+            self._trace(sig.asset, "TRADE BLOCKED", f"{why} (stake {stake:.2f})")
+            return
+
+        expiry_seconds = int(
+            (sig.expiry_at - sig.entry_at).total_seconds()
+        ) or self.settings.expiry_minutes * 60
+        try:
+            order = self.executor.place(sig.asset, sig.direction, stake, expiry_seconds)
+        except Exception as exc:
+            self._trace(sig.asset, "TRADE FAILED", f"broker rejected the order: {exc}")
+            self.on_error(f"{sig.asset}: order failed: {exc}")
+            return
+
+        self.safety.register_open()
+        sig.order = order
+        self._trace(
+            sig.asset, "TRADE PLACED",
+            f"{self.trade_mode.upper()} {sig.side} {stake:.2f} for {expiry_seconds}s"
+            + (f" (broker id {order.broker_id})" if order.broker_id else ""),
+        )
+        self.on_status(f"{self.trade_mode.upper()} order placed: {sig.asset} {sig.side} {stake:.2f}")
 
     def _has_candle_at_or_after(self, asset: str, ts: datetime) -> bool:
         """Whether the candle covering ``ts`` has actually closed and arrived."""
@@ -485,6 +532,25 @@ class SignalEngine:
                 self.on_status(f"Telegram result failed: {err}")
             elif err:
                 self._trace(sig.asset, "TELEGRAM", err)
+
+        order = getattr(sig, "order", None)
+        if order is not None and self.executor is not None:
+            try:
+                fill = self.executor.settle(order, result.exit_price, result.won, self.payout)
+                self.safety.register_close(fill.profit)
+                verdict = "WIN" if fill.won else "LOSS"
+                note = " (broker-reported)" if fill.source == "broker" else ""
+                self._trace(
+                    sig.asset, "TRADE SETTLED",
+                    f"{self.trade_mode.upper()} {verdict} {fill.profit:+.2f}{note}, "
+                    f"balance {self.executor.balance():.2f}",
+                )
+                if self.safety.state.halted:
+                    self._trace(sig.asset, "HALTED", self.safety.state.halt_reason)
+                    self.on_status(f"Trading halted: {self.safety.state.halt_reason}")
+            except Exception as exc:
+                self.safety.register_close(-order.stake)
+                self._trace(sig.asset, "TRADE SETTLE FAILED", str(exc))
 
         self._trace(
             sig.asset, "SETTLED",

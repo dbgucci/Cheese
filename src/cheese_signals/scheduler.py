@@ -71,6 +71,7 @@ class PendingSignal:
     cancel_reason: Optional[str] = None
     db_id: Optional[int] = None
     entry_price: Optional[float] = None
+    order: object = None          # the placed trade, when autotrading is on
 
     @property
     def lead_seconds(self) -> int:
