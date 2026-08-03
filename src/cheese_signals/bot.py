@@ -67,6 +67,26 @@ def cmd_backtest(args: argparse.Namespace) -> None:
 def cmd_lab(args: argparse.Namespace) -> None:
     from . import strategy_lab as lab
 
+    # Measure the strategy you are actually running: take the periods and
+    # thresholds from your saved settings, and vary only setup x trigger.
+    if not args.defaults:
+        from .settings import Settings
+
+        try:
+            s = Settings.load()
+            lab.register_combos(s.setup_config(), s.trigger_config())
+        except Exception as exc:  # a bad settings file must not block the lab
+            print(f"Could not read saved settings ({exc}); using built-in defaults.\n")
+
+    if args.list_strategies:
+        print("setup/trigger pairs (default):")
+        for name in lab.COMBOS:
+            print(f"  {name}")
+        print("\nlegacy strategies:")
+        for name in lab.LEGACY_STRATEGIES:
+            print(f"  {name}")
+        return
+
     if args.csv:
         frames = {args.csv: CsvFeed(args.csv).get_candles(10 ** 9)}
     elif args.synthetic:
@@ -81,7 +101,11 @@ def cmd_lab(args: argparse.Namespace) -> None:
             return
 
     expiries = tuple(args.expiry) if args.expiry else (1, 2, 3, 4, 5)
-    strategies = args.strategy or list(lab.STRATEGIES)
+    strategies = args.strategy or list(lab.DEFAULT_STRATEGIES)
+    unknown = [s for s in strategies if s not in lab.STRATEGIES]
+    if unknown:
+        print(f"Unknown strategy: {', '.join(unknown)}. Run `lab --list-strategies` to see the names.")
+        return
 
     for asset, df in sorted(frames.items()):
         if df is None or len(df) < 400:
@@ -200,7 +224,12 @@ def main() -> None:
     lab.add_argument("--synthetic", type=int, metavar="N",
                      help="use N synthetic candles instead of real data")
     lab.add_argument("--strategy", action="append",
-                     help="strategy to test (repeatable); default: all")
+                     help="strategy to test (repeatable), e.g. trend_continuation/bos; "
+                          "default: every setup/trigger pair")
+    lab.add_argument("--list-strategies", action="store_true",
+                     help="print the available strategy names and exit")
+    lab.add_argument("--defaults", action="store_true",
+                     help="use built-in strategy parameters instead of your saved settings")
     lab.add_argument("--expiry", type=int, action="append",
                      help="expiry in minutes (repeatable); default: 1-5")
     lab.add_argument("--payout", type=float, default=0.85)

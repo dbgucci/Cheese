@@ -1,4 +1,4 @@
-# Cheese Signals
+# KPS
 
 A Windows desktop app that generates 1-minute trading signals for Pocket
 Option **OTC** pairs, tells you the pair, direction, and the exact minute to
@@ -21,9 +21,14 @@ included.
   candle, with the pair, BUY/SELL, exact entry time and expiry time. The
   setup is re-checked every candle in the meantime and cancelled if it
   breaks down.
-- **OTC-tuned strategy engine** — a liquidity-sweep/exhaustion primary setup
-  plus regime-gated trend and mean-reversion strategies, weighted for the
-  fact that OTC feeds are broker-generated rather than real markets.
+- **Setup and trigger are chosen separately**, from dropdowns in Settings —
+  three setups (trend continuation, support/resistance, reversal) × three
+  triggers (fractal, break of structure, momentum), each with its own
+  editable parameters. Changing the strategy does not require a new build.
+- **Conflicting settings are called out in the app**, not silently obeyed:
+  an inverted ADX band, a setting that only applies to a trigger you aren't
+  using, or a balance already below your stop floor all raise a visible
+  warning that explains the consequence.
 - **Every candle and every outcome is stored** in a SQLite journal in a
   folder on your Desktop, so you can re-analyse and re-backtest on your own
   broker's real data.
@@ -32,31 +37,40 @@ included.
   show you *which conditions* actually make or lose money on your feed.
 - **Telegram alerts** for both the advance signal and the post-expiry
   win/loss result.
-- **Adjustable settings** in-app: lead time, expiry, confidence threshold,
-  pairs, risk, sessions, data source, Telegram.
-- **Modern dark UI**, and a single standalone `.exe` with no Python needed.
+- **Adjustable settings** in-app across five tabs: strategy, timing, trading,
+  pairs & data, alerts. Controls that cannot affect the current
+  configuration are greyed out rather than left to mislead you.
+- **Paper and live auto-trading**, off by default and behind a safety gate
+  that fails closed (balance floor, daily loss cap, hourly trade cap, an
+  explicit live confirmation).
+- **Dark gold UI** with green/red reserved strictly for market direction, a
+  built-in logo/taskbar icon, and a single standalone `.exe` with no Python
+  needed.
 
 ## Screenshots
 
-| Analytics | History | Settings |
-|---|---|---|
-| ![Analytics](docs/screenshots/analytics.png) | ![History](docs/screenshots/history.png) | ![Settings](docs/screenshots/settings.png) |
+| Analytics | History | Diagnostics | Settings |
+|---|---|---|---|
+| ![Analytics](docs/screenshots/analytics.png) | ![History](docs/screenshots/history.png) | ![Diagnostics](docs/screenshots/diagnostics.png) | ![Settings](docs/screenshots/settings.png) |
+
+Screenshots are generated from the real app by
+`python scripts/make_screenshots.py` (demo data, not real results).
 
 ## Getting the .exe
 
 **Option A — download a prebuilt one.** Go to the repo's **Actions** tab →
 **Build Windows EXE** → *Run workflow*. When it finishes, download the
-`CheeseSignals-windows` artifact; it contains `CheeseSignals.exe`.
+`KPS-windows` artifact; it contains `KPS.exe`.
 
 **Option B — build it yourself on Windows.** Clone the repo and
 double-click `build_windows.bat`. It creates a virtualenv, installs
-everything, and produces `dist\CheeseSignals.exe`.
+everything, and produces `dist\KPS.exe`.
 
 Then copy the `.exe` anywhere (your Desktop is fine) and double-click it. On
-first run it creates a **`CheeseSignals` folder on your Desktop** containing:
+first run it creates a **`KPS` folder on your Desktop** containing:
 
 ```
-Desktop/CheeseSignals/
+Desktop/KPS/
   signals.db        every candle, signal and outcome (SQLite)
   settings.json     your settings
   exports/          CSV exports from the History tab
@@ -124,12 +138,60 @@ of any exchange. That has real consequences the strategy design accounts for
 None of the above is settled fact about your particular feed. It's the
 starting prior — and the journal exists so you can overturn it with data.
 
+## Setups and triggers
+
+The engine separates *what to trade* from *when to enter*, because the two
+have different tolerances for lag. A setup may look back as far as it likes
+— identifying a trend or a level from history is fine. A **trigger must
+not**, because on a 1-minute expiry every candle of lag is a candle of the
+move you no longer capture.
+
+**Setups** (`setups.py`) — pick one, tune its own parameters:
+
+| Setup | Trades | Parameters |
+|---|---|---|
+| `trend_continuation` | with the trend, on a pullback resolving | EMA period, Keltner EMA/ATR/multiplier, require HA alignment |
+| `support_resistance` | rejections away from a rolling level | lookback, touch tolerance (ATR), rejection wick % |
+| `reversal` | exhaustion against the current move | RSI period/levels, Bollinger period/σ |
+
+All three also share an **ADX band** (min/max), so any setup can be
+restricted to the trend strength it works in.
+
+**Triggers** (`triggers.py`) — slowest to fastest:
+
+| Trigger | Lag | Parameters |
+|---|---|---|
+| `fractal` | ~3 candles by construction — a period-7 fractal isn't knowable until 3 bars after it forms | period, max age |
+| `bos` | none — the fractal only locates the *level*; the trigger is the current candle closing through it | lookback, break buffer (ATR) |
+| `momentum` | none — a wide current bar closing near its extreme | close position %, minimum range in ATR |
+
+Faster is not automatically better: a faster trigger fires on more noise.
+That trade-off is measurable on your own recorded candles rather than
+argued about:
+
+```bash
+cheese-signals lab --list-strategies      # every setup/trigger pair
+cheese-signals lab --expiry 1 --expiry 3  # compares all 9 pairs on your journal
+cheese-signals lab --strategy trend_continuation/bos --lead 0 --lead 2
+```
+
+By default the lab reads the **periods and thresholds from your saved
+settings** and varies only setup × trigger, so it measures the strategy you
+are actually running. Pass `--defaults` to use the built-in parameters
+instead.
+
+Always read the `baseline` line the lab prints first. It shows what
+always-BUY and always-SELL scored on the same candles; a strategy that
+cannot beat those is showing you the window's drift, not skill.
+
 ## What's actually in here
 
 - **`indicators.py`** -- RSI, EMA, MACD, Bollinger Bands, Stochastic, ATR,
   ADX. Hand-rolled on pandas/numpy, no TA-Lib build dependency.
-- **`strategies.py`** -- four strategies, each gated to the regime it's
-  designed for:
+- **`strategies.py`** -- the four older standalone strategies. The live
+  engine now runs the setup/trigger pairs above; these are kept because the
+  journal contains months of trades tagged with them, and the lab can still
+  compare against them by name:
   - `liquidity_sweep` *(primary 1-minute setup)*: price wicks through a
     confirmed pivot swing level and closes back **inside** it, with the
     rejection candle's body measured against ATR. All three conditions are
@@ -170,7 +232,18 @@ starting prior — and the journal exists so you can overturn it with data.
   (works with zero setup, used for the backtests below), a CSV loader for
   real exported history, and an optional live Pocket Option adapter.
 - **`notifiers/telegram.py`** -- push signals to a Telegram chat.
-- **`bot.py`** -- CLI: `cheese-signals backtest` and `cheese-signals watch`.
+- **`setups.py` / `triggers.py`** -- the selectable engine described
+  [above](#setups-and-triggers). Every parameter is editable from Settings.
+- **`strategy_lab.py`** -- walk-forward comparison of every setup/trigger
+  pair at every expiry and lead time, on your own journal candles, against
+  an always-BUY/always-SELL baseline.
+- **`execution.py`** -- paper and live order placement. Off by default;
+  `SafetyGate` fails closed, so an unreadable balance blocks a trade rather
+  than permitting one.
+- **`diagnostics.py`** -- the bounded trace behind the Diagnostics tab: each
+  pair scanned, every condition that passed or failed, and why a setup did
+  or didn't fire. On-screen only, never sent to Telegram.
+- **`bot.py`** -- CLI: `cheese-signals backtest`, `lab`, and `watch`.
 
 ## Quickstart
 
@@ -305,14 +378,21 @@ balance per trade) on purpose.
 ```
 src/cheese_signals/
   indicators.py       technical indicators
-  strategies.py       trend_following / mean_reversion / price_action
-  confluence.py       regime-aware combination of the three
+  setups.py           trend_continuation / support_resistance / reversal
+  triggers.py         fractal / bos / momentum entry triggers
+  strategies.py       the older standalone strategies (still lab-comparable)
+  confluence.py       regime-aware combination of the older three
+  strategy_lab.py     walk-forward comparison on your own recorded candles
   backtest.py         walk-forward simulator + report
+  execution.py        paper/live order placement behind a safety gate
+  diagnostics.py      the on-screen trace of what fired and what didn't
+  settings.py         every editable option, plus the conflict checks
   risk.py             position sizing, trade pacing, session filters
-  bot.py              CLI (backtest / watch)
+  bot.py              CLI (backtest / lab / watch)
   data/               synthetic, csv, pocket_option feeds
   notifiers/          telegram
-tests/                pytest suite for indicators/strategies/backtest
+  gui/                PySide6 app: theme, branding, pages, settings
+tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
 ```
 

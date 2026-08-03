@@ -1,5 +1,5 @@
 @echo off
-REM Build CheeseSignals.exe on a Windows machine.
+REM Build KPS.exe on a Windows machine.
 REM Requires Python 3.10+ installed and on PATH.
 
 REM Always run from the folder this script lives in, so double-clicking it
@@ -7,7 +7,7 @@ REM from Explorer (or running it from another directory) still works.
 cd /d "%~dp0"
 
 echo ============================================
-echo   Building Cheese Signals for Windows
+echo   Building KPS for Windows
 echo ============================================
 echo.
 
@@ -56,7 +56,7 @@ if errorlevel 1 (
 
 echo.
 echo [3/4] Building executable (this takes a few minutes)...
-pyinstaller packaging\CheeseSignals.spec --noconfirm
+pyinstaller packaging\KPS.spec --noconfirm
 if errorlevel 1 (
     echo.
     echo ERROR: PyInstaller failed. The output above says why.
@@ -67,14 +67,14 @@ if errorlevel 1 (
 echo.
 echo [4/4] Done.
 echo.
-if exist dist\CheeseSignals.exe (
-    echo SUCCESS: dist\CheeseSignals.exe
+if exist dist\KPS.exe (
+    echo SUCCESS: dist\KPS.exe
     echo.
     echo Copy that file wherever you like and double-click it.
-    echo On first run it creates a "CheeseSignals" folder on your Desktop
+    echo On first run it creates a "KPS" folder on your Desktop
     echo for its database, settings and exports.
 ) else (
-    echo BUILD FAILED: dist\CheeseSignals.exe was not produced.
+    echo BUILD FAILED: dist\KPS.exe was not produced.
     echo Scroll up to find the first line containing "ERROR".
 )
 echo.

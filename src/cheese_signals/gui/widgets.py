@@ -147,7 +147,7 @@ class SignalCard(QFrame):
         secs_to_entry = self.signal.seconds_until_entry(now)
         if secs_to_entry > 0:
             self.countdown_label.setText("ENTER IN")
-            self.countdown.setStyleSheet(f"color: {theme.ACCENT};")
+            self.countdown.setStyleSheet(f"color: {theme.GOLD};")
             self.countdown.setText(self._fmt(secs_to_entry))
             return
 
@@ -215,7 +215,11 @@ class EmptyState(QFrame):
             s.setWordWrap(True)
             # Cap the measure so the copy wraps into a readable column instead
             # of one long line, and let it claim the height that wrapping needs.
-            s.setMaximumWidth(520)
-            s.setMinimumHeight(52)
+            s.setMaximumWidth(560)
+            # ...but not so narrow that it wraps into a thin ribbon. A wrapped
+            # QLabel's size hint is unreliable, so pin both ends of the measure.
+            s.setMinimumWidth(440)
+            # Enough rows for the longest copy; wrapped text is easy to clip.
+            s.setMinimumHeight(80)
             s.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
             lay.addWidget(s, 0, Qt.AlignmentFlag.AlignHCenter)

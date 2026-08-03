@@ -13,3 +13,6 @@ dist/
 CheeseSignals/
 *.db
 settings.json
+
+# Generated at build time by the PyInstaller spec
+packaging/kps.ico

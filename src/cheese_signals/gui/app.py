@@ -40,6 +40,8 @@ from .. import analytics, paths, profiles, storage
 from ..engine import SignalEngine
 from ..settings import DEFAULT_ASSETS, Settings
 from . import theme
+from .branding import APP_LONG_NAME, APP_NAME, APP_TAGLINE, app_icon
+from .settings_page import SettingsPage
 from .widgets import EmptyState, SignalCard, StatCard, StatusDot
 
 PAYOUT = 0.85
@@ -134,7 +136,7 @@ class LivePage(QWidget):
 
         self.empty = EmptyState(
             "No active signals",
-            "Start the engine and the bot will watch your OTC pairs. When a setup forms you'll "
+            "Start the engine and KPS will watch your OTC pairs. When a setup forms you'll "
             "get the pair, direction, and the exact minute to enter — here and on Telegram.",
         )
         self.cards_layout.addWidget(self.empty)
@@ -485,414 +487,6 @@ class DiagnosticsPage(QWidget):
             self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
 
 
-class SettingsPage(QWidget):
-    def __init__(self, window: "MainWindow"):
-        super().__init__()
-        self.window = window
-        s = window.settings
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 20)
-        root.setSpacing(16)
-        root.addWidget(
-            _title_block("Settings", "Changes are saved to your data folder and applied on the next engine start.")
-        )
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        holder = QWidget()
-        body = QVBoxLayout(holder)
-        body.setContentsMargins(0, 0, 6, 0)
-        body.setSpacing(14)
-        scroll.setWidget(holder)
-        root.addWidget(scroll, 1)
-
-        # ---------------- strategy ----------------
-        card, lay = _card("Strategy")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.strategy_box = QComboBox()
-        self.strategy_box.addItems(["trend_continuation", "liquidity_sweep"])
-        self.strategy_box.setCurrentText(s.strategy)
-        grid.addWidget(QLabel("Setup to trade"), 0, 0)
-        grid.addWidget(self.strategy_box, 0, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        strat_note = QLabel(
-            "trend_continuation trades WITH the trend: Heikin Ashi above/below the Keltner "
-            "mid (EMA 20), price on the same side of the EMA 200, triggered by a confirmed "
-            "period-7 fractal. liquidity_sweep trades reversals — the opposite posture. "
-            "Only one runs at a time.\n\n"
-            "Run 'cheese-signals lab' to compare both on your own recorded candles before "
-            "choosing."
-        )
-        strat_note.setObjectName("Hint")
-        strat_note.setWordWrap(True)
-        lay.addWidget(strat_note)
-
-        self.adaptive_expiry = QCheckBox(
-            "Choose expiry automatically from how long moves have been lasting"
-        )
-        self.adaptive_expiry.setChecked(s.adaptive_expiry)
-        lay.addWidget(self.adaptive_expiry)
-
-        grid2 = QGridLayout()
-        grid2.setHorizontalSpacing(16)
-        grid2.setVerticalSpacing(11)
-        self.expiry_min = QSpinBox()
-        self.expiry_min.setRange(1, 10)
-        self.expiry_min.setValue(s.expiry_min_minutes)
-        self.expiry_min.setSuffix("  min")
-        self.expiry_max = QSpinBox()
-        self.expiry_max.setRange(1, 15)
-        self.expiry_max.setValue(s.expiry_max_minutes)
-        self.expiry_max.setSuffix("  min")
-        grid2.addWidget(QLabel("Shortest expiry it may pick"), 0, 0)
-        grid2.addWidget(self.expiry_min, 0, 1)
-        grid2.addWidget(QLabel("Longest expiry it may pick"), 1, 0)
-        grid2.addWidget(self.expiry_max, 1, 1)
-
-        self.fractal_age = QSpinBox()
-        self.fractal_age.setRange(0, 40)
-        self.fractal_age.setValue(s.fractal_max_age)
-        self.fractal_age.setSuffix("  candles")
-        self.fractal_age.setToolTip(
-            "How recently a fractal must have formed to trigger a trade. Too small and "
-            "the strategy stays silent through long trends; too large and it enters on a "
-            "pullback that already finished."
-        )
-        grid2.addWidget(QLabel("Fractal trigger window"), 2, 0)
-        grid2.addWidget(self.fractal_age, 2, 1)
-
-        self.adx_min = QDoubleSpinBox()
-        self.adx_min.setRange(0, 100); self.adx_min.setValue(getattr(s, "adx_min", 0.0))
-        self.adx_max = QDoubleSpinBox()
-        self.adx_max.setRange(0, 100); self.adx_max.setValue(getattr(s, "adx_max", 100.0))
-        grid2.addWidget(QLabel("Only trade when ADX is at least"), 3, 0)
-        grid2.addWidget(self.adx_min, 3, 1)
-        grid2.addWidget(QLabel("...and at most"), 4, 0)
-        grid2.addWidget(self.adx_max, 4, 1)
-        grid2.setColumnStretch(0, 1)
-        lay.addLayout(grid2)
-        body.addWidget(card)
-
-        # ---------------- signal timing ----------------
-        card, lay = _card("Signal timing")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.lead = QSpinBox()
-        self.lead.setRange(0, 10)
-        self.lead.setValue(s.lead_minutes)
-        self.lead.setSuffix("  min")
-        grid.addWidget(QLabel("Advance warning before entry"), 0, 0)
-        grid.addWidget(self.lead, 0, 1)
-
-        self.expiry = QSpinBox()
-        self.expiry.setRange(1, 15)
-        self.expiry.setValue(s.expiry_minutes)
-        self.expiry.setSuffix("  min")
-        grid.addWidget(QLabel("Option expiry"), 1, 0)
-        grid.addWidget(self.expiry, 1, 1)
-
-        self.cooldown = QSpinBox()
-        self.cooldown.setRange(0, 60)
-        self.cooldown.setValue(s.cooldown_minutes)
-        self.cooldown.setSuffix("  min")
-        grid.addWidget(QLabel("Cooldown between signals per pair"), 2, 0)
-        grid.addWidget(self.cooldown, 2, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        hint = QLabel(
-            "A longer advance warning gives you more time to place the trade, but the market keeps "
-            "moving in between, so the prediction is weaker. The signal is re-checked every candle "
-            "and cancelled if the setup breaks down. Check the Analytics tab's "
-            "'By advance-warning time' table to see what it actually costs you."
-        )
-        hint.setObjectName("Hint")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-        body.addWidget(card)
-
-        # ---------------- signal quality ----------------
-        card, lay = _card("Signal quality")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.min_score = QDoubleSpinBox()
-        self.min_score.setRange(0.30, 1.0)
-        self.min_score.setSingleStep(0.05)
-        self.min_score.setValue(s.min_score)
-        grid.addWidget(QLabel("Minimum confidence to fire"), 0, 0)
-        grid.addWidget(self.min_score, 0, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        self.require_sweep = QCheckBox("Only trade liquidity-sweep setups (highest conviction, fewer signals)")
-        self.require_sweep.setChecked(s.require_liquidity_sweep)
-        self.use_bias = QCheckBox("Use higher-timeframe trend bias as a filter")
-        self.use_bias.setChecked(s.use_higher_timeframe_bias)
-        self.restrict_sessions = QCheckBox("Restrict trading to specific sessions")
-        self.restrict_sessions.setChecked(s.restrict_to_sessions)
-        for cb in (self.require_sweep, self.use_bias, self.restrict_sessions):
-            lay.addWidget(cb)
-
-        note = QLabel(
-            "OTC pairs are broker-generated synthetic feeds that run 24/7, so 'London session' "
-            "liquidity does not literally apply to them. Leave session restriction off until the "
-            "Analytics tab shows a real per-session difference in your own results."
-        )
-        note.setObjectName("Hint")
-        note.setWordWrap(True)
-        lay.addWidget(note)
-        body.addWidget(card)
-
-        # ---------------- pairs ----------------
-        card, lay = _card("Pairs to watch")
-        self.assets_edit = QTextEdit()
-        self.assets_edit.setPlainText("\n".join(s.assets))
-        self.assets_edit.setMaximumHeight(120)
-        lay.addWidget(self.assets_edit)
-        h = QLabel("One per line. Pocket Option OTC symbols end in _otc (e.g. EURUSD_otc).")
-        h.setObjectName("Hint")
-        lay.addWidget(h)
-        body.addWidget(card)
-
-        # ---------------- autotrading ----------------
-        card, lay = _card("Autotrading")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.trade_mode = QComboBox()
-        self.trade_mode.addItems(["off", "paper", "live"])
-        self.trade_mode.setCurrentText(getattr(s, "trade_mode", "off"))
-        grid.addWidget(QLabel("Execution mode"), 0, 0)
-        grid.addWidget(self.trade_mode, 0, 1)
-
-        self.max_stake = QDoubleSpinBox()
-        self.max_stake.setRange(1, 10000)
-        self.max_stake.setValue(getattr(s, "max_stake", 50.0))
-        self.max_stake.setPrefix("$ ")
-        grid.addWidget(QLabel("Hard cap per trade"), 1, 0)
-        grid.addWidget(self.max_stake, 1, 1)
-
-        self.max_concurrent = QSpinBox()
-        self.max_concurrent.setRange(1, 20)
-        self.max_concurrent.setValue(getattr(s, "max_concurrent_trades", 3))
-        grid.addWidget(QLabel("Max trades open at once"), 2, 0)
-        grid.addWidget(self.max_concurrent, 2, 1)
-
-        self.max_daily_loss = QDoubleSpinBox()
-        self.max_daily_loss.setRange(1, 100000)
-        self.max_daily_loss.setValue(getattr(s, "max_daily_loss", 100.0))
-        self.max_daily_loss.setPrefix("$ ")
-        grid.addWidget(QLabel("Stop trading after losing"), 3, 0)
-        grid.addWidget(self.max_daily_loss, 3, 1)
-
-        self.min_balance = QDoubleSpinBox()
-        self.min_balance.setRange(0, 100000)
-        self.min_balance.setValue(getattr(s, "min_balance", 50.0))
-        self.min_balance.setPrefix("$ ")
-        grid.addWidget(QLabel("Never trade below balance"), 4, 0)
-        grid.addWidget(self.min_balance, 4, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        trade_note = QLabel(
-            "off — signals only, nothing is placed.\n"
-            "paper — simulated trades against the real feed with a simulated balance. "
-            "This is how you find out whether the strategy is worth trading, at no risk.\n"
-            "live — places REAL orders with REAL money on your Pocket Option account.\n\n"
-            "Every order is checked against the caps above first, and trading halts "
-            "automatically when the daily loss limit is reached. Do not switch to live "
-            "until the Analytics tab shows an edge over a meaningful number of trades."
-        )
-        trade_note.setObjectName("Hint")
-        trade_note.setWordWrap(True)
-        lay.addWidget(trade_note)
-        body.addWidget(card)
-
-        # ---------------- risk ----------------
-        card, lay = _card("Risk")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.balance = QDoubleSpinBox()
-        self.balance.setRange(10, 1_000_000)
-        self.balance.setValue(s.account_balance)
-        self.balance.setPrefix("$ ")
-        grid.addWidget(QLabel("Account balance"), 0, 0)
-        grid.addWidget(self.balance, 0, 1)
-
-        self.risk_pct = QDoubleSpinBox()
-        self.risk_pct.setRange(0.1, 20.0)
-        self.risk_pct.setSingleStep(0.5)
-        self.risk_pct.setValue(s.risk_per_trade * 100)
-        self.risk_pct.setSuffix(" %")
-        grid.addWidget(QLabel("Risk per trade"), 1, 0)
-        grid.addWidget(self.risk_pct, 1, 1)
-
-        self.max_trades = QSpinBox()
-        self.max_trades.setRange(1, 60)
-        self.max_trades.setValue(s.max_trades_per_hour)
-        grid.addWidget(QLabel("Max trades per hour"), 2, 0)
-        grid.addWidget(self.max_trades, 2, 1)
-
-        self.daily_loss = QDoubleSpinBox()
-        self.daily_loss.setRange(1.0, 50.0)
-        self.daily_loss.setValue(s.max_daily_loss_fraction * 100)
-        self.daily_loss.setSuffix(" %")
-        grid.addWidget(QLabel("Stop for the day after losing"), 3, 0)
-        grid.addWidget(self.daily_loss, 3, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-        body.addWidget(card)
-
-        # ---------------- connection ----------------
-        card, lay = _card("Data source")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-
-        self.source = QComboBox()
-        self.source.addItems(["synthetic", "pocket_option"])
-        self.source.setCurrentText(s.data_source)
-        grid.addWidget(QLabel("Feed"), 0, 0)
-        grid.addWidget(self.source, 0, 1)
-
-        self.ssid = QLineEdit(s.pocket_option_ssid)
-        self.ssid.setEchoMode(QLineEdit.EchoMode.Password)
-        self.ssid.setPlaceholderText("Pocket Option session ID")
-        grid.addWidget(QLabel("Pocket Option SSID"), 1, 0)
-        grid.addWidget(self.ssid, 1, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        h = QLabel(
-            "'synthetic' generates practice data locally and needs no credentials — use it to try "
-            "the app safely. 'pocket_option' requires the optional binaryoptionstoolsv2 package."
-        )
-        h.setObjectName("Hint")
-        h.setWordWrap(True)
-        lay.addWidget(h)
-        body.addWidget(card)
-
-        # ---------------- telegram ----------------
-        card, lay = _card("Telegram notifications")
-        self.tg_enabled = QCheckBox("Send signal alerts and win/loss results to Telegram")
-        self.tg_enabled.setChecked(s.telegram_enabled)
-        lay.addWidget(self.tg_enabled)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(11)
-        self.tg_token = QLineEdit(s.telegram_bot_token)
-        self.tg_token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.tg_token.setPlaceholderText("123456:ABC-DEF...")
-        self.tg_chat = QLineEdit(s.telegram_chat_id)
-        self.tg_chat.setPlaceholderText("your chat ID")
-        grid.addWidget(QLabel("Bot token"), 0, 0)
-        grid.addWidget(self.tg_token, 0, 1)
-        grid.addWidget(QLabel("Chat ID"), 1, 0)
-        grid.addWidget(self.tg_chat, 1, 1)
-        grid.setColumnStretch(0, 1)
-        lay.addLayout(grid)
-
-        test = QPushButton("Send test message")
-        test.setObjectName("Ghost")
-        test.clicked.connect(self.test_telegram)
-        lay.addWidget(test, 0, Qt.AlignmentFlag.AlignLeft)
-        body.addWidget(card)
-
-        body.addStretch(1)
-
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        save = QPushButton("Save Settings")
-        save.setObjectName("Primary")
-        save.clicked.connect(self.save)
-        footer.addWidget(save)
-        root.addLayout(footer)
-
-    def test_telegram(self) -> None:
-        from ..notifiers import TelegramNotifier
-
-        token, chat = self.tg_token.text().strip(), self.tg_chat.text().strip()
-        if not token or not chat:
-            QMessageBox.warning(self, "Telegram", "Enter both a bot token and a chat ID first.")
-            return
-        ok, msg = TelegramNotifier(token, chat).test()
-        (QMessageBox.information if ok else QMessageBox.warning)(self, "Telegram", msg)
-
-    def save(self) -> None:
-        mode = self.trade_mode.currentText()
-        confirmed = getattr(self.window.settings, "live_confirmed", False)
-        if mode == "live" and not confirmed:
-            # Real money needs a deliberate act, not a dropdown selection.
-            typed, ok = QInputDialog.getText(
-                self, "Confirm live trading",
-                "This will place REAL orders with REAL money on your Pocket Option\n"
-                "account, automatically, without asking again.\n\n"
-                "Your logged results do not yet show a proven edge.\n\n"
-                'Type  TRADE LIVE  to confirm, or Cancel to stay in paper mode:',
-            )
-            if not ok or typed.strip() != "TRADE LIVE":
-                self.trade_mode.setCurrentText("paper")
-                mode = "paper"
-                QMessageBox.information(
-                    self, "Autotrading",
-                    "Not confirmed — left in paper mode.",
-                )
-            else:
-                confirmed = True
-        if mode != "live":
-            confirmed = False
-
-        assets = [a.strip() for a in self.assets_edit.toPlainText().splitlines() if a.strip()]
-        self.window.settings.update(
-            trade_mode=mode,
-            live_confirmed=confirmed,
-            strategy=self.strategy_box.currentText(),
-            adaptive_expiry=self.adaptive_expiry.isChecked(),
-            expiry_min_minutes=self.expiry_min.value(),
-            expiry_max_minutes=max(self.expiry_max.value(), self.expiry_min.value()),
-            fractal_max_age=self.fractal_age.value(),
-            adx_min=self.adx_min.value(),
-            adx_max=self.adx_max.value(),
-            max_stake=self.max_stake.value(),
-            max_concurrent_trades=self.max_concurrent.value(),
-            max_daily_loss=self.max_daily_loss.value(),
-            min_balance=self.min_balance.value(),
-            lead_minutes=self.lead.value(),
-            expiry_minutes=self.expiry.value(),
-            cooldown_minutes=self.cooldown.value(),
-            min_score=self.min_score.value(),
-            require_liquidity_sweep=self.require_sweep.isChecked(),
-            use_higher_timeframe_bias=self.use_bias.isChecked(),
-            restrict_to_sessions=self.restrict_sessions.isChecked(),
-            assets=assets or list(DEFAULT_ASSETS),
-            account_balance=self.balance.value(),
-            risk_per_trade=self.risk_pct.value() / 100.0,
-            max_trades_per_hour=self.max_trades.value(),
-            max_daily_loss_fraction=self.daily_loss.value() / 100.0,
-            data_source=self.source.currentText(),
-            pocket_option_ssid=self.ssid.text().strip(),
-            telegram_enabled=self.tg_enabled.isChecked(),
-            telegram_bot_token=self.tg_token.text().strip(),
-            telegram_chat_id=self.tg_chat.text().strip(),
-        )
-        self.window.set_status("Settings saved. Restart the engine to apply.")
-        QMessageBox.information(self, "Settings", "Saved to your data folder.")
-
-
 class MainWindow(QMainWindow):
     sig_signal = QtSignal(object)
     sig_cancel = QtSignal(object, str)
@@ -901,7 +495,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Cheese Signals")
+        self.setWindowTitle(APP_LONG_NAME)
+        self.setWindowIcon(app_icon())
         self.resize(1240, 830)
         self.setMinimumSize(1060, 700)
 
@@ -958,13 +553,18 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(15, 22, 15, 18)
         lay.setSpacing(6)
 
-        brand = QLabel("Cheese Signals")
+        brand = QLabel(APP_NAME)
         brand.setObjectName("BrandMark")
-        sub = QLabel("OTC · 1-Minute")
+        sub = QLabel(APP_TAGLINE)
         sub.setObjectName("BrandSub")
         lay.addWidget(brand)
         lay.addWidget(sub)
-        lay.addSpacing(22)
+        rule = QFrame()
+        rule.setObjectName("BrandRule")
+        rule.setFixedHeight(1)
+        lay.addSpacing(14)
+        lay.addWidget(rule)
+        lay.addSpacing(14)
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
@@ -1169,7 +769,8 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Cheese Signals")
+    app.setApplicationName(APP_LONG_NAME)
+    app.setWindowIcon(app_icon())
     app.setStyleSheet(theme.stylesheet())
     win = MainWindow()
     win.show()

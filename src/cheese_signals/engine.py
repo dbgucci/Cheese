@@ -19,6 +19,7 @@ from . import confluence, diagnostics, execution, outcome as outcome_mod, profil
 from . import indicators as ind
 from . import strategies as strat
 from . import trend as trend_mod
+from . import setups as setups_mod
 from .scheduler import ACTIVE, PendingSignal, SignalScheduler, revalidate, schedule_signal
 from .settings import Settings
 from .strategies import DOWN, FLAT, UP
@@ -103,6 +104,15 @@ class SignalEngine:
     # -------------------------------- loop --------------------------------
     def _run(self) -> None:
         self.on_status("Engine started")
+        self._trace(
+            "engine", "STARTED",
+            f"setup={self.settings.strategy} trigger={self.settings.trigger} "
+            f"execution={self.trade_mode}"
+            + (f" balance={self.executor.balance():.2f}" if self.executor else "")
+            + f" | watching {len(self.settings.assets)} pairs",
+        )
+        for problem in self.settings.conflicts():
+            self._trace("engine", "CONFIG WARNING", problem)
         while not self._stop.is_set():
             try:
                 self._tick()
@@ -155,7 +165,10 @@ class SignalEngine:
         # Each strategy needs enough history to warm its slowest indicator.
         # Reporting the shortfall matters: a feed that never returns enough
         # candles suppresses every signal forever, and used to do so silently.
-        required = trend_mod.MIN_BARS if self.settings.strategy == "trend_continuation" else 120
+        required = (
+            self.settings.setup_config().min_bars()
+            if self.settings.strategy in setups_mod.SETUPS else 120
+        )
         have = 0 if df is None else len(df)
         if have < required:
             self._trace(
@@ -287,8 +300,8 @@ class SignalEngine:
 
     def _evaluate(self, df: pd.DataFrame, asset: str, profile) -> tuple:
         """Run the strategies and return (result, winning_strategy_name, features)."""
-        if self.settings.strategy == "trend_continuation":
-            return self._evaluate_trend(df, profile)
+        if self.settings.strategy in setups_mod.SETUPS:
+            return self._evaluate_setup(df, profile)
 
         sweep = strat.liquidity_sweep(df)
         conf = confluence.evaluate(
@@ -348,13 +361,10 @@ class SignalEngine:
         r.describe = lambda: reason
         return r, name, features
 
-    def _evaluate_trend(self, df: pd.DataFrame, profile) -> tuple:
-        """Heikin Ashi trend continuation, scored on real prices."""
-        sig, checks = trend_mod.explain(
-            df,
-            fractal_max_age=self.settings.fractal_max_age,
-            adx_min=getattr(self.settings, 'adx_min', 0.0),
-            adx_max=getattr(self.settings, 'adx_max', 100.0),
+    def _evaluate_setup(self, df: pd.DataFrame, profile) -> tuple:
+        """Run the configured setup + trigger, scored on real prices."""
+        sig, checks = setups_mod.evaluate(
+            df, self.settings.setup_config(), self.settings.trigger_config()
         )
 
         high, low, close = df["high"], df["low"], df["close"]
@@ -383,7 +393,7 @@ class SignalEngine:
         r.score = sig.score
         r.describe = lambda: sig.reason
         r.checks = [str(c) for c in checks]
-        return r, "trend_continuation", features
+        return r, f"{self.settings.strategy}+{self.settings.trigger}", features
 
     def _bias_frame(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         mult = self.settings.bias_multiple

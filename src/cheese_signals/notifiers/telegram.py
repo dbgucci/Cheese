@@ -61,7 +61,7 @@ class TelegramNotifier:
 
     def test(self) -> tuple[bool, str]:
         """Used by the Settings screen's 'Send test message' button."""
-        ok = self.send("*Cheese Signals* connected. Notifications are working.")
+        ok = self.send("*KPS* connected. Notifications are working.")
         return (ok, "Test message sent." if ok else "Failed -- check the token and chat ID.")
 
     # --------------------------- signal alerts ---------------------------

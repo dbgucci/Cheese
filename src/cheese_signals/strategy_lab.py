@@ -11,24 +11,87 @@ values, because that is what the option settles against.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 import pandas as pd
 
+from . import setups as setups_mod
 from . import storage
 from . import strategies as strat
 from . import trend as trend_mod
+from . import triggers as trig_mod
 from .strategies import DOWN, FLAT, UP
 
 StrategyFn = Callable[[pd.DataFrame], strat.Signal]
 
-STRATEGIES: dict[str, StrategyFn] = {
+LEGACY_STRATEGIES: dict[str, StrategyFn] = {
     "trend_continuation": trend_mod.trend_continuation,
     "liquidity_sweep": strat.liquidity_sweep,
     "mean_reversion": strat.mean_reversion,
     "price_action": strat.price_action,
 }
+
+STRATEGIES: dict[str, StrategyFn] = dict(LEGACY_STRATEGIES)
+
+# How many bars each entry needs before its first signal can be trusted.
+WARMUP: dict[str, int] = {"trend_continuation": trend_mod.MIN_BARS}
+
+
+def combo_name(setup_kind: str, trigger_kind: str) -> str:
+    return f"{setup_kind}/{trigger_kind}"
+
+
+def make_combo(
+    setup: setups_mod.SetupConfig,
+    trigger: trig_mod.TriggerConfig,
+) -> StrategyFn:
+    """Wrap a setup+trigger pair as a lab strategy function.
+
+    The lab only wants the Signal, but ``setups.evaluate`` also returns the
+    per-condition checks the Diagnostics tab shows; drop them here.
+    """
+
+    def fn(df: pd.DataFrame) -> strat.Signal:
+        signal, _checks = setups_mod.evaluate(df, setup, trigger)
+        return signal
+
+    fn.__name__ = combo_name(setup.kind, trigger.kind)
+    return fn
+
+
+def register_combos(
+    setup: Optional[setups_mod.SetupConfig] = None,
+    trigger: Optional[trig_mod.TriggerConfig] = None,
+) -> list[str]:
+    """Register every setup x trigger pair, returning their names.
+
+    ``setup``/``trigger`` supply the *parameters* (periods, thresholds, bands);
+    only ``kind`` is overridden. Pass the configs from your saved settings and
+    the lab measures the same strategy the app is actually running, rather than
+    a default one you never use.
+    """
+    base_setup = setup or setups_mod.SetupConfig()
+    base_trigger = trigger or trig_mod.TriggerConfig()
+
+    names: list[str] = []
+    for s_kind in setups_mod.SETUPS:
+        for t_kind in trig_mod.TRIGGERS:
+            s = replace(base_setup, kind=s_kind)
+            t = replace(base_trigger, kind=t_kind)
+            name = combo_name(s_kind, t_kind)
+            STRATEGIES[name] = make_combo(s, t)
+            WARMUP[name] = s.min_bars()
+            names.append(name)
+    return names
+
+
+COMBOS: list[str] = register_combos()
+
+# What ``cheese-signals lab`` compares when you do not name strategies: the
+# combinations the live engine can actually be configured to run. The legacy
+# entries stay available by name for historical comparison.
+DEFAULT_STRATEGIES: list[str] = list(COMBOS)
 
 
 @dataclass
@@ -76,7 +139,7 @@ def run(
     """
     fn = STRATEGIES[strategy]
     n = len(df)
-    warm = warmup if warmup is not None else (trend_mod.MIN_BARS if strategy == "trend_continuation" else 260)
+    warm = warmup if warmup is not None else WARMUP.get(strategy, 260)
     result = LabResult(strategy, expiry_minutes, 0, 0, 0.0)
     closes = df["close"].to_numpy()
     cool = 0

@@ -1,6 +1,6 @@
 name: Build Windows EXE
 
-# Builds the standalone CheeseSignals.exe on a Windows runner and uploads it
+# Builds the standalone KPS.exe on a Windows runner and uploads it
 # as a downloadable artifact. Run it from the Actions tab ("Run workflow"),
 # or push a v* tag to also attach the exe to a GitHub Release.
 on:
@@ -36,7 +36,7 @@ jobs:
           pytest -q
 
       - name: Build executable
-        run: pyinstaller packaging/CheeseSignals.spec --noconfirm
+        run: pyinstaller packaging/KPS.spec --noconfirm
 
       - name: Show build output
         run: dir dist
@@ -44,8 +44,8 @@ jobs:
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CheeseSignals-windows
-          path: dist/CheeseSignals.exe
+          name: KPS-windows
+          path: dist/KPS.exe
           if-no-files-found: error
           retention-days: 90
 
@@ -53,4 +53,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/CheeseSignals.exe
+          files: dist/KPS.exe

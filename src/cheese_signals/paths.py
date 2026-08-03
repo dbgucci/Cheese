@@ -11,7 +11,8 @@ import os
 import sys
 from pathlib import Path
 
-APP_FOLDER_NAME = "CheeseSignals"
+APP_FOLDER_NAME = "KPS"
+LEGACY_FOLDER_NAME = "CheeseSignals"
 
 
 def _desktop_dir() -> Path:
@@ -37,13 +38,29 @@ def _desktop_dir() -> Path:
 
 
 def data_dir() -> Path:
-    """Root data folder: ``<Desktop>/CheeseSignals``. Created on first use.
+    """Root data folder: ``<Desktop>/KPS``. Created on first use.
 
     Override with the ``CHEESE_SIGNALS_HOME`` environment variable (used by
     the test suite so tests never touch a real Desktop).
     """
-    override = os.environ.get("CHEESE_SIGNALS_HOME")
-    root = Path(override) if override else _desktop_dir() / APP_FOLDER_NAME
+    override = os.environ.get("CHEESE_SIGNALS_HOME") or os.environ.get("KPS_HOME")
+    if override:
+        root = Path(override)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    desktop = _desktop_dir()
+    root = desktop / APP_FOLDER_NAME
+    legacy = desktop / LEGACY_FOLDER_NAME
+
+    # Carry an existing journal over to the new name rather than starting a
+    # fresh, empty folder beside it -- the trade history is the valuable part.
+    if legacy.is_dir() and not root.exists():
+        try:
+            legacy.rename(root)
+        except OSError:
+            root = legacy      # in use or permission denied: keep using it
+
     root.mkdir(parents=True, exist_ok=True)
     return root
 

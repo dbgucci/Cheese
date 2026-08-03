@@ -1,8 +1,8 @@
 # PyInstaller spec: builds a single-file Windows executable.
 #
-#   pyinstaller packaging/CheeseSignals.spec --noconfirm
+#   pyinstaller packaging/KPS.spec --noconfirm
 #
-# Produces dist/CheeseSignals.exe -- no Python install required on the
+# Produces dist/KPS.exe -- no Python install required on the
 # target machine.
 
 import sys
@@ -41,6 +41,14 @@ a = Analysis(
         "cheese_signals.gui.app",
         "cheese_signals.gui.theme",
         "cheese_signals.gui.widgets",
+        "cheese_signals.gui.branding",
+        "cheese_signals.gui.settings_page",
+        "cheese_signals.setups",
+        "cheese_signals.triggers",
+        "cheese_signals.execution",
+        "cheese_signals.diagnostics",
+        "cheese_signals.trend",
+        "cheese_signals.strategy_lab",
         "cheese_signals.data",
         "cheese_signals.data.synthetic",
         "cheese_signals.data.csv_feed",
@@ -76,7 +84,20 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-icon_path = ROOT / "packaging" / "icon.ico"
+# Generate the KPS icon at build time so no binary asset is committed.
+icon_path = ROOT / "packaging" / "kps.ico"
+try:
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from cheese_signals.gui.branding import write_ico
+    write_ico(str(icon_path))
+    print(f"generated icon: {icon_path}")
+except Exception as exc:
+    print(f"WARNING: could not generate the icon ({exc}); building without one")
 
 exe = EXE(
     pyz,
@@ -85,7 +106,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="CheeseSignals",
+    name="KPS",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
