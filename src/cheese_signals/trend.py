@@ -64,6 +64,99 @@ def _ha_run_length(ha: pd.DataFrame) -> int:
     return run
 
 
+@dataclass
+class Check:
+    """One condition in the setup, and whether it currently holds."""
+
+    name: str
+    passed: bool
+    detail: str
+
+    def __str__(self) -> str:
+        mark = "PASS" if self.passed else "fail"
+        return f"[{mark}] {self.name}: {self.detail}"
+
+
+def explain(df: pd.DataFrame, **kwargs) -> tuple[Signal, list[Check]]:
+    """Evaluate the setup and report every condition, pass or fail.
+
+    This exists so "why did nothing fire?" is answerable. A strategy that can
+    only say FLAT is impossible to debug against a chart, and silent
+    conditions -- most obviously "not enough candles yet" -- can suppress
+    every signal indefinitely without any visible symptom.
+    """
+    checks: list[Check] = []
+
+    if len(df) < MIN_BARS:
+        checks.append(Check(
+            "history", False,
+            f"{len(df)} candles, need {MIN_BARS} (EMA200 warm-up). Waiting for backfill.",
+        ))
+        return Signal(FLAT, 0.0, "insufficient history"), checks
+    checks.append(Check("history", True, f"{len(df)} candles available"))
+
+    close, high, low = df["close"], df["high"], df["low"]
+    ha = ind.heikin_ashi(df)
+    kc = ind.keltner_channel(
+        high, low, close,
+        ema_period=kwargs.get("keltner_ema", KELTNER_EMA),
+        atr_period=kwargs.get("keltner_atr", KELTNER_ATR),
+        multiplier=kwargs.get("keltner_mult", KELTNER_MULT),
+    )
+    ema200 = ind.ema(close, kwargs.get("ema_trend", EMA_TREND))
+    frac = ind.fractals(high, low, period=kwargs.get("fractal_period", FRACTAL_PERIOD))
+
+    ha_close = float(ha["close"].iloc[-1])
+    mid = float(kc["mid"].iloc[-1])
+    price = float(close.iloc[-1])
+    ema_now = float(ema200.iloc[-1])
+    max_age = kwargs.get("fractal_max_age", 2)
+
+    side = "above" if ha_close > mid else "below"
+    checks.append(Check(
+        "HA vs Keltner mid", True,
+        f"HA close {ha_close:.5f} is {side} mid {mid:.5f} -> favours {'BUY' if side == 'above' else 'SELL'}",
+    ))
+
+    ema_side = "above" if price > ema_now else "below"
+    checks.append(Check(
+        "price vs EMA200", True,
+        f"price {price:.5f} is {ema_side} EMA200 {ema_now:.5f} "
+        f"-> favours {'BUY' if ema_side == 'above' else 'SELL'}",
+    ))
+
+    trend_agrees = (side == "above") == (ema_side == "above")
+    checks.append(Check(
+        "trend agreement", trend_agrees,
+        "Keltner and EMA200 agree" if trend_agrees
+        else "Keltner and EMA200 disagree -- no trade in a conflicted trend",
+    ))
+
+    bars = len(df) - 1
+    up_idx = np.flatnonzero(frac["up"].to_numpy())
+    down_idx = np.flatnonzero(frac["down"].to_numpy())
+    needed = "down-fractal (swing low)" if side == "above" else "up-fractal (swing high)"
+    idx = down_idx if side == "above" else up_idx
+
+    if len(idx) == 0:
+        checks.append(Check("fractal trigger", False, f"no confirmed {needed} in this window"))
+    else:
+        age = bars - int(idx[-1])
+        ok = age <= max_age
+        checks.append(Check(
+            "fractal trigger", ok,
+            f"last confirmed {needed} was {age} bars ago"
+            + ("" if ok else f", older than the {max_age}-bar trigger window"),
+        ))
+
+    sig = trend_continuation(df, **kwargs)
+    if sig.is_actionable:
+        checks.append(Check("result", True, f"{'BUY' if sig.direction == UP else 'SELL'} at score {sig.score:.2f}"))
+    else:
+        checks.append(Check("result", False, "no signal"))
+    return sig, checks
+
+
 def trend_continuation(
     df: pd.DataFrame,
     ema_trend: int = EMA_TREND,

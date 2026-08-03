@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from . import confluence, outcome as outcome_mod, profiles, sessions, storage
+from . import confluence, diagnostics, outcome as outcome_mod, profiles, sessions, storage
 from . import indicators as ind
 from . import strategies as strat
 from . import trend as trend_mod
@@ -43,6 +43,7 @@ class SignalEngine:
         on_result: Optional[Callback] = None,
         on_status: Optional[Callback] = None,
         on_error: Optional[Callback] = None,
+        on_trace: Optional[Callback] = None,
     ):
         self.settings = settings
         self.journal = journal
@@ -55,6 +56,8 @@ class SignalEngine:
         self.on_result = on_result or (lambda *a, **k: None)
         self.on_status = on_status or (lambda *a, **k: None)
         self.on_error = on_error or (lambda *a, **k: None)
+        self.on_trace = on_trace or (lambda *a, **k: None)
+        self.traces = diagnostics.TraceLog()
 
         self.scheduler = SignalScheduler(
             lead_minutes=settings.lead_minutes,
@@ -95,6 +98,11 @@ class SignalEngine:
             self._stop.wait(self.settings.poll_seconds)
         self.on_status("Engine stopped")
 
+    def _trace(self, asset, outcome, summary, checks=(), candles=0, score=0.0, direction=0):
+        t = diagnostics.make_trace(asset, outcome, summary, checks, candles, score, direction)
+        self.traces.add(t)
+        self.on_trace(t)
+
     def _feed_for(self, asset: str):
         if asset not in self._feeds:
             self._feeds[asset] = self.feed_factory(asset)
@@ -125,22 +133,35 @@ class SignalEngine:
     # ------------------------------ scanning ------------------------------
     def _scan_asset(self, asset: str, now: datetime) -> None:
         if not sessions.market_is_open(asset, now):
+            self._trace(asset, "SKIPPED", "market closed for this instrument")
             return
 
         feed = self._feed_for(asset)
-        df = feed.get_candles(400)
-        if df is None or len(df) < 120:
+        df = feed.get_candles(500)
+
+        # Each strategy needs enough history to warm its slowest indicator.
+        # Reporting the shortfall matters: a feed that never returns enough
+        # candles suppresses every signal forever, and used to do so silently.
+        required = trend_mod.MIN_BARS if self.settings.strategy == "trend_continuation" else 120
+        have = 0 if df is None else len(df)
+        if have < required:
+            self._trace(
+                asset, "WARMING UP",
+                f"{have} candles, need {required} for {self.settings.strategy}",
+                candles=have,
+            )
             return
 
         latest_ts = df.index[-1]
         if self._last_candle_ts.get(asset) == latest_ts:
-            return  # no new closed candle yet
+            return  # no new closed candle yet; nothing has changed to report
         self._last_candle_ts[asset] = latest_ts
 
         self.journal.record_candles(asset, df.tail(50))
 
         profile = profiles.profile_for(asset)
         result, strategy_name, features = self._evaluate(df, asset, profile)
+        checks = getattr(result, "checks", [])
 
         # Re-validate any pending signal for this asset against the new candle.
         for pending in list(self.scheduler.awaiting_entry(now)):
@@ -161,7 +182,15 @@ class SignalEngine:
                     self.notifier.send_cancelled(pending, reason)
                 self.on_cancel(pending, reason)
 
-        if result.direction == FLAT or result.score < self.settings.min_score:
+        if result.direction == FLAT:
+            self._trace(asset, "NO SETUP", result.describe(), checks, len(df))
+            return
+        if result.score < self.settings.min_score:
+            self._trace(
+                asset, "SUPPRESSED",
+                f"score {result.score:.2f} below minimum {self.settings.min_score:.2f}",
+                checks, len(df), result.score, result.direction,
+            )
             return
 
         if (
@@ -172,15 +201,24 @@ class SignalEngine:
             return
 
         if self.scheduler.has_pending_for(asset):
-            return  # one live signal per asset at a time
+            self._trace(asset, "SUPPRESSED", "a signal for this pair is already live",
+                        checks, len(df), result.score, result.direction)
+            return
 
         last = self._last_signal_ts.get(asset)
         if last and (now - last).total_seconds() < self.settings.cooldown_minutes * 60:
+            wait = self.settings.cooldown_minutes * 60 - (now - last).total_seconds()
+            self._trace(asset, "SUPPRESSED",
+                        f"cooldown active, {wait:.0f}s remaining",
+                        checks, len(df), result.score, result.direction)
             return
 
         session_label = sessions.session_label(now)
         if self.settings.restrict_to_sessions and self.settings.allowed_sessions:
             if session_label not in self.settings.allowed_sessions:
+                self._trace(asset, "SUPPRESSED",
+                            f"session '{session_label}' not in the allowed list",
+                            checks, len(df), result.score, result.direction)
                 return
 
         expiry_minutes = self.settings.expiry_minutes
@@ -223,6 +261,13 @@ class SignalEngine:
         self.scheduler.add(signal)
         self._last_signal_ts[asset] = now
 
+        self._trace(
+            asset, "FIRED",
+            f"{'BUY' if signal.direction == UP else 'SELL'} entry {signal.entry_at:%H:%M:%S} "
+            f"expiry {expiry_minutes}min score {signal.score:.2f}",
+            checks, len(df), signal.score, signal.direction,
+        )
+
         if self.notifier:
             self.notifier.send_signal(signal)
         self.on_signal(signal)
@@ -231,6 +276,7 @@ class SignalEngine:
         """Run the strategies and return (result, winning_strategy_name, features)."""
         if self.settings.strategy == "trend_continuation":
             return self._evaluate_trend(df, profile)
+
         sweep = strat.liquidity_sweep(df)
         conf = confluence.evaluate(
             df,
@@ -291,7 +337,7 @@ class SignalEngine:
 
     def _evaluate_trend(self, df: pd.DataFrame, profile) -> tuple:
         """Heikin Ashi trend continuation, scored on real prices."""
-        sig = trend_mod.trend_continuation(df)
+        sig, checks = trend_mod.explain(df, fractal_max_age=self.settings.fractal_max_age)
 
         high, low, close = df["high"], df["low"], df["close"]
         adx_val = float(ind.adx(high, low, close).iloc[-1])
@@ -318,6 +364,7 @@ class SignalEngine:
         r.direction = sig.direction
         r.score = sig.score
         r.describe = lambda: sig.reason
+        r.checks = [str(c) for c in checks]
         return r, "trend_continuation", features
 
     def _bias_frame(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -394,6 +441,9 @@ class SignalEngine:
         if not self._has_candle_at_or_after(sig.asset, sig.expiry_at):
             waited = (now - sig.expiry_at).total_seconds()
             if waited < SETTLEMENT_GRACE_SECONDS:
+                if waited < 2:   # report once, not on every poll
+                    self._trace(sig.asset, "AWAITING CANDLE",
+                                f"expiry reached; waiting for the {sig.expiry_at:%H:%M} candle")
                 return  # try again on the next tick
             self.on_status(
                 f"{sig.asset}: expiry candle never arrived after "
@@ -426,5 +476,19 @@ class SignalEngine:
             )
 
         if self.notifier:
-            self.notifier.send_result(result)
+            ok, err = self.notifier.send_result(result)
+            if not ok:
+                # A result that never arrives looks like a bot that stopped
+                # working, so say so rather than failing quietly.
+                self._trace(sig.asset, "TELEGRAM FAILED",
+                            f"could not deliver the {result.result_word} message: {err}")
+                self.on_status(f"Telegram result failed: {err}")
+            elif err:
+                self._trace(sig.asset, "TELEGRAM", err)
+
+        self._trace(
+            sig.asset, "SETTLED",
+            f"{result.result_word} {result.pnl:+.2f} "
+            f"(entry {result.entry_price:.5f} -> exit {result.exit_price:.5f})",
+        )
         self.on_result(result)

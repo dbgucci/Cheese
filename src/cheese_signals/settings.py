@@ -39,6 +39,11 @@ class Settings:
     # so only one runs at a time.
     strategy: str = "trend_continuation"
     adaptive_expiry: bool = True
+    # How recently a fractal must have been confirmed to count as a trigger.
+    # In a strong trend new swing points form rarely, so a 1-2 bar window
+    # silences the strategy for long stretches; too wide and it fires on a
+    # pullback that is long finished. Watch the Diagnostics tab to tune it.
+    fractal_max_age: int = 5
     expiry_min_minutes: int = 1
     expiry_max_minutes: int = 5
 

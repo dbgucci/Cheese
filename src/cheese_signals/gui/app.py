@@ -385,6 +385,98 @@ class AnalyticsPage(QWidget):
             self._table_widgets.append(frame)
 
 
+class DiagnosticsPage(QWidget):
+    """Live view of what the engine is reading and why it did or didn't fire."""
+
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self.window = window
+        self.paused = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(26, 24, 26, 20)
+        root.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.addWidget(
+            _title_block(
+                "Diagnostics",
+                "Every pair the engine reads, each condition it checks, and the reason a "
+                "setup fired or did not. Written to a log file in your data folder too.",
+            )
+        )
+        header.addStretch(1)
+
+        self.only_fired = QCheckBox("Signals only")
+        self.only_fired.stateChanged.connect(lambda _: self.refresh())
+        header.addWidget(self.only_fired)
+
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setObjectName("Ghost")
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        header.addWidget(self.pause_btn)
+
+        clear = QPushButton("Clear")
+        clear.setObjectName("Ghost")
+        clear.clicked.connect(self._clear)
+        header.addWidget(clear)
+
+        logs = QPushButton("Open Log Folder")
+        logs.setObjectName("Ghost")
+        logs.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.logs_dir())))
+        )
+        header.addWidget(logs)
+        root.addLayout(header)
+
+        self.summary = QLabel("Engine not running.")
+        self.summary.setObjectName("Hint")
+        self.summary.setWordWrap(True)
+        root.addWidget(self.summary)
+
+        self.view = QTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        root.addWidget(self.view, 1)
+
+    def _toggle_pause(self) -> None:
+        self.paused = not self.paused
+        self.pause_btn.setText("Resume" if self.paused else "Pause")
+        if not self.paused:
+            self.refresh()
+
+    def _clear(self) -> None:
+        eng = self.window.engine
+        if eng:
+            eng.traces.clear()
+        self.view.clear()
+
+    def refresh(self) -> None:
+        eng = self.window.engine
+        if eng is None:
+            self.summary.setText(
+                "Engine not running. Start it from Live Signals and this will fill in."
+            )
+            return
+        if self.paused:
+            return
+
+        traces = eng.traces.recent(limit=250, only_fired=self.only_fired.isChecked())
+        counts = eng.traces.counts()
+        if counts:
+            parts = [f"{v} {k.lower()}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+            self.summary.setText("Recent activity: " + ", ".join(parts))
+        else:
+            self.summary.setText("Waiting for the first candle...")
+
+        # Preserve the scroll position unless the user is pinned to the bottom.
+        bar = self.view.verticalScrollBar()
+        at_bottom = bar.value() >= bar.maximum() - 4
+        self.view.setPlainText("\n".join(t.as_text() for t in traces))
+        if at_bottom:
+            self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
+
+
 class SettingsPage(QWidget):
     def __init__(self, window: "MainWindow"):
         super().__init__()
@@ -454,6 +546,18 @@ class SettingsPage(QWidget):
         grid2.addWidget(self.expiry_min, 0, 1)
         grid2.addWidget(QLabel("Longest expiry it may pick"), 1, 0)
         grid2.addWidget(self.expiry_max, 1, 1)
+
+        self.fractal_age = QSpinBox()
+        self.fractal_age.setRange(0, 40)
+        self.fractal_age.setValue(s.fractal_max_age)
+        self.fractal_age.setSuffix("  candles")
+        self.fractal_age.setToolTip(
+            "How recently a fractal must have formed to trigger a trade. Too small and "
+            "the strategy stays silent through long trends; too large and it enters on a "
+            "pullback that already finished."
+        )
+        grid2.addWidget(QLabel("Fractal trigger window"), 2, 0)
+        grid2.addWidget(self.fractal_age, 2, 1)
         grid2.setColumnStretch(0, 1)
         lay.addLayout(grid2)
         body.addWidget(card)
@@ -663,6 +767,7 @@ class SettingsPage(QWidget):
             adaptive_expiry=self.adaptive_expiry.isChecked(),
             expiry_min_minutes=self.expiry_min.value(),
             expiry_max_minutes=max(self.expiry_max.value(), self.expiry_min.value()),
+            fractal_max_age=self.fractal_age.value(),
             lead_minutes=self.lead.value(),
             expiry_minutes=self.expiry.value(),
             cooldown_minutes=self.cooldown.value(),
@@ -718,8 +823,10 @@ class MainWindow(QMainWindow):
         self.live_page = LivePage(self)
         self.history_page = HistoryPage(self)
         self.analytics_page = AnalyticsPage(self)
+        self.diagnostics_page = DiagnosticsPage(self)
         self.settings_page = SettingsPage(self)
-        for p in (self.live_page, self.history_page, self.analytics_page, self.settings_page):
+        for p in (self.live_page, self.history_page, self.analytics_page,
+                  self.diagnostics_page, self.settings_page):
             self.stack.addWidget(p)
         content.addWidget(self.stack, 1)
         outer.addLayout(content, 1)
@@ -759,7 +866,8 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         for i, (label, _) in enumerate(
-            [("Live Signals", 0), ("History", 1), ("Analytics", 2), ("Settings", 3)]
+            [("Live Signals", 0), ("History", 1), ("Analytics", 2),
+             ("Diagnostics", 3), ("Settings", 4)]
         ):
             btn = QPushButton(f"   {label}")
             btn.setObjectName("NavButton")
@@ -804,6 +912,8 @@ class MainWindow(QMainWindow):
             self._history_stale = False
         elif index == 2:
             self.analytics_page.refresh()
+        elif index == 3:
+            self.diagnostics_page.refresh()
 
     # ------------------------------ engine ------------------------------
     def _feed_factory(self, asset: str):
@@ -892,6 +1002,8 @@ class MainWindow(QMainWindow):
     def _tick_ui(self) -> None:
         self.clock.setText(f"{datetime.now(timezone.utc):%H:%M:%S} UTC")
         self.live_page.refresh()
+        if self.stack.currentIndex() == 3:
+            self.diagnostics_page.refresh()
 
     def _refresh_stats(self) -> None:
         # All aggregates come from SQL: constant work regardless of history size.

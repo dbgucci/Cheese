@@ -8,6 +8,13 @@ from typing import Optional
 import requests
 
 
+def _strip_markdown(text: str) -> str:
+    """Plain-text fallback used when Telegram rejects the formatted version."""
+    for ch in ("*", "_", "`"):
+        text = text.replace(ch, "")
+    return text.replace("\\", "")
+
+
 def _esc(text: str) -> str:
     """Escape the characters Telegram's legacy Markdown parser treats specially."""
     for ch in ("_", "*", "`", "["):
@@ -23,21 +30,34 @@ class TelegramNotifier:
         self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
     def send(self, text: str) -> bool:
-        """Send a message. Returns False on failure rather than raising.
+        ok, _ = self.send_verbose(text)
+        return ok
 
-        A notification failure must never take the trading loop down with it,
-        so network errors are swallowed here and surfaced via the return value.
+    def send_verbose(self, text: str) -> tuple[bool, str]:
+        """Send a message, returning (ok, error).
+
+        Telegram rejects a whole message with HTTP 400 if its Markdown does
+        not parse, and an attributed win/loss reason is full of underscores,
+        parentheses and decimals that can trip it. Losing every result message
+        to a formatting error -- silently -- is worse than losing the
+        formatting, so a parse failure is retried as plain text.
+
+        Failures are reported rather than swallowed: a notifier that quietly
+        does nothing is indistinguishable from a broken bot.
         """
+        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"}
         try:
-            resp = requests.post(
-                self._url,
-                json={"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"},
-                timeout=self.timeout,
-            )
+            resp = requests.post(self._url, json=payload, timeout=self.timeout)
+            if resp.status_code == 400:
+                plain = {"chat_id": self.chat_id, "text": _strip_markdown(text)}
+                retry = requests.post(self._url, json=plain, timeout=self.timeout)
+                if retry.ok:
+                    return True, "sent as plain text (Markdown was rejected)"
+                return False, f"HTTP {retry.status_code}: {retry.text[:200]}"
             resp.raise_for_status()
-            return True
-        except requests.RequestException:
-            return False
+            return True, ""
+        except requests.RequestException as exc:
+            return False, str(exc)
 
     def test(self) -> tuple[bool, str]:
         """Used by the Settings screen's 'Send test message' button."""
@@ -70,8 +90,12 @@ class TelegramNotifier:
         )
 
     # --------------------------- result alerts ---------------------------
-    def send_result(self, outcome) -> bool:
-        """Post-expiry win/loss with the attributed reason."""
+    def send_result(self, outcome) -> tuple[bool, str]:
+        """Post-expiry win/loss with the attributed reason.
+
+        Returns (ok, error) so the caller can surface a delivery failure
+        instead of the user simply never receiving a result.
+        """
         sig = outcome.signal
         icon = "✅ *WIN*" if outcome.won else "❌ *LOSS*"
         text = (
@@ -81,7 +105,7 @@ class TelegramNotifier:
             f"P/L: *{outcome.pnl:+.2f}*\n"
             f"_{_esc(outcome.reason)}_"
         )
-        return self.send(text)
+        return self.send_verbose(text)
 
     def send_daily_summary(self, wins: int, losses: int, pnl: float, payout: float = 0.85) -> bool:
         total = wins + losses
