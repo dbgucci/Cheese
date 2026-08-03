@@ -51,6 +51,18 @@ def _hint(text):
     return lab
 
 
+def _group_hint(grid, row, text):
+    """A description that belongs to the section above it, not the one below.
+
+    Placed inside the group's own grid and spanning both columns, so the gap
+    before the next section heading always reads as a section break.
+    """
+    lab = _hint(text)
+    lab.setContentsMargins(0, 4, 0, 0)
+    grid.addWidget(lab, row, 0, 1, 2)
+    return lab
+
+
 def _spin(lo, hi, val, step=1, suffix="", decimals=None):
     w = QDoubleSpinBox() if decimals is not None else QSpinBox()
     w.setRange(lo, hi)
@@ -70,11 +82,14 @@ class SettingsPage(QWidget):
         s = window.settings
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(26, 22, 26, 18)
-        root.setSpacing(14)
+        root.setContentsMargins(
+            theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_TOP,
+            theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_BOTTOM,
+        )
+        root.setSpacing(theme.GAP_LG)
 
         head = QVBoxLayout()
-        head.setSpacing(3)
+        head.setSpacing(5)
         t = QLabel("Settings")
         t.setObjectName("PageTitle")
         sub = QLabel("Everything the engine reads. Changes apply on the next engine start.")
@@ -99,6 +114,7 @@ class SettingsPage(QWidget):
         self.tabs.addTab(self._tab_alerts(s), "Alerts")
 
         footer = QHBoxLayout()
+        footer.setContentsMargins(0, 4, 0, 0)
         reset = QPushButton("Reset to Defaults")
         reset.setObjectName("Ghost")
         reset.clicked.connect(self.reset_defaults)
@@ -125,24 +141,22 @@ class SettingsPage(QWidget):
     def _tab_strategy(self, s):
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 10, 10, 10)
-        lay.setSpacing(12)
+        lay.setContentsMargins(2, 6, 14, 16)
+        lay.setSpacing(10)
 
         box, grid = _group("Setup — what to look for")
         self.strategy = QComboBox(); self.strategy.addItems(setups_mod.SETUPS)
         self.strategy.setCurrentText(s.strategy)
         _row(grid, 0, "Setup", self.strategy)
+        self.setup_help = _group_hint(grid, 1, setups_mod.SETUP_HELP.get(s.strategy, ""))
         lay.addWidget(box)
-        self.setup_help = _hint(setups_mod.SETUP_HELP.get(s.strategy, ""))
-        lay.addWidget(self.setup_help)
 
         box, grid = _group("Trigger — when to act")
         self.trigger = QComboBox(); self.trigger.addItems(trig.TRIGGERS)
         self.trigger.setCurrentText(s.trigger)
         _row(grid, 0, "Trigger", self.trigger)
+        self.trigger_help = _group_hint(grid, 1, trig.TRIGGER_HELP.get(s.trigger, ""))
         lay.addWidget(box)
-        self.trigger_help = _hint(trig.TRIGGER_HELP.get(s.trigger, ""))
-        lay.addWidget(self.trigger_help)
 
         # --- per-setup parameters ---
         self.box_trend, grid = _group("Trend continuation parameters")
@@ -207,7 +221,7 @@ class SettingsPage(QWidget):
 
     def _tab_timing(self, s):
         page = QWidget(); lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 10, 10, 10); lay.setSpacing(12)
+        lay.setContentsMargins(2, 6, 14, 16); lay.setSpacing(10)
 
         box, grid = _group("Entry timing")
         self.lead = _row(grid, 0, "Advance warning", _spin(0, 10, s.lead_minutes, 1, " min"),
@@ -257,7 +271,7 @@ class SettingsPage(QWidget):
 
     def _tab_trading(self, s):
         page = QWidget(); lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 10, 10, 10); lay.setSpacing(12)
+        lay.setContentsMargins(2, 6, 14, 16); lay.setSpacing(10)
 
         box, grid = _group("Autotrading")
         self.trade_mode = QComboBox(); self.trade_mode.addItems(["off", "paper", "live"])
@@ -294,7 +308,7 @@ class SettingsPage(QWidget):
 
     def _tab_pairs(self, s):
         page = QWidget(); lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 10, 10, 10); lay.setSpacing(12)
+        lay.setContentsMargins(2, 6, 14, 16); lay.setSpacing(10)
 
         box, grid = _group("Pairs to watch")
         self.assets_edit = QTextEdit("\n".join(s.assets))
@@ -320,7 +334,7 @@ class SettingsPage(QWidget):
 
     def _tab_alerts(self, s):
         page = QWidget(); lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 10, 10, 10); lay.setSpacing(12)
+        lay.setContentsMargins(2, 6, 14, 16); lay.setSpacing(10)
 
         box, grid = _group("Telegram")
         self.tg_enabled = QCheckBox("Send signal alerts and win/loss results")

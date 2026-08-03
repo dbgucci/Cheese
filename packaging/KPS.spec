@@ -42,6 +42,8 @@ a = Analysis(
         "cheese_signals.gui.theme",
         "cheese_signals.gui.widgets",
         "cheese_signals.gui.branding",
+        "cheese_signals.gui.icons",
+        "cheese_signals.gui.models",
         "cheese_signals.gui.settings_page",
         "cheese_signals.setups",
         "cheese_signals.triggers",

@@ -1,14 +1,17 @@
-"""Reusable UI components: stat cards, signal cards, status dot."""
+"""Reusable UI components: stat strip, signal cards, status dot, empty state.
+
+Everything here is flat. No component draws a shadow or an all-round border
+unless it is a real container -- depth comes from one surface step and a
+hairline, which is what keeps a dense trading UI from looking like a form.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -19,52 +22,68 @@ from PySide6.QtWidgets import (
 from . import theme
 
 
-def card_shadow(widget: QWidget, blur: int = 26, alpha: int = 96) -> None:
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setXOffset(0)
-    effect.setYOffset(3)
-    effect.setColor(QColor(0, 0, 0, alpha))
-    widget.setGraphicsEffect(effect)
+def hairline(vertical: bool = False) -> QFrame:
+    line = QFrame()
+    line.setObjectName("StatDivider")
+    if vertical:
+        line.setFixedWidth(1)
+    else:
+        line.setFixedHeight(1)
+    return line
 
 
-class StatCard(QFrame):
-    """A headline metric: big value, small uppercase label, optional sub-note."""
+class StatTile(QFrame):
+    """One metric inside a StatStrip: value, label, optional sub-note."""
 
-    def __init__(self, label: str, value: str = "--", delta: str = "", accent: str | None = None):
+    def __init__(self, label: str, value: str = "--", delta: str = ""):
         super().__init__()
-        self.setObjectName("StatCard")
-        self.setMinimumHeight(96)
+        self.setObjectName("StatTile")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        card_shadow(self)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 15, 18, 15)
-        lay.setSpacing(5)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(4)
 
         self.label = QLabel(label.upper())
         self.label.setObjectName("StatLabel")
 
         self.value = QLabel(value)
         self.value.setObjectName("StatValue")
-        if accent:
-            self.value.setStyleSheet(f"color: {accent};")
 
-        # Always occupy the delta row, even when empty, so the big numbers
-        # sit on the same baseline across every card in the row.
+        # The delta row always exists, even when empty, so the big numbers sit
+        # on one baseline across the strip.
         self.delta = QLabel(delta or " ")
         self.delta.setObjectName("StatDelta")
 
         lay.addWidget(self.label)
         lay.addWidget(self.value)
-        lay.addStretch(1)
         lay.addWidget(self.delta)
 
     def set_value(self, value: str, delta: str = "", accent: str | None = None) -> None:
         self.value.setText(value)
-        if accent:
-            self.value.setStyleSheet(f"color: {accent};")
+        self.value.setStyleSheet(f"color: {accent};" if accent else "")
         self.delta.setText(delta or " ")
+
+
+class StatStrip(QFrame):
+    """Tiles sharing one surface, divided by hairlines.
+
+    One bounded strip rather than four floating cards: the numbers read as a
+    single summary line instead of four unrelated widgets.
+    """
+
+    def __init__(self, tiles: list[StatTile]):
+        super().__init__()
+        self.setObjectName("StatStrip")
+        self.tiles = tiles
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        for i, tile in enumerate(tiles):
+            if i:
+                lay.addWidget(hairline(vertical=True))
+            lay.addWidget(tile, 1)
 
 
 class SignalCard(QFrame):
@@ -75,16 +94,15 @@ class SignalCard(QFrame):
         self.signal = signal
         is_buy = signal.direction == 1
         self.setObjectName("SignalCardBuy" if is_buy else "SignalCardSell")
-        self.setMinimumHeight(112)
-        card_shadow(self, 22)
+        self.setMinimumHeight(118)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(18, 15, 18, 15)
-        root.setSpacing(16)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(20)
 
         # --- left: pair, side pill, details ---
         left = QVBoxLayout()
-        left.setSpacing(7)
+        left.setSpacing(9)
 
         top = QHBoxLayout()
         top.setSpacing(10)
@@ -118,7 +136,7 @@ class SignalCard(QFrame):
 
         # --- right: live countdown ---
         right = QVBoxLayout()
-        right.setSpacing(2)
+        right.setSpacing(3)
         right.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.countdown_label = QLabel("ENTER IN")
         self.countdown_label.setObjectName("CountdownLabel")
@@ -171,13 +189,15 @@ class SignalCard(QFrame):
 class StatusDot(QLabel):
     """Small coloured dot indicating engine run state."""
 
-    def __init__(self, size: int = 9):
+    def __init__(self, size: int = 8):
         super().__init__()
         self._size = size
         self.setFixedSize(size, size)
         self.set_state(False)
 
     def set_state(self, running: bool) -> None:
+        from PySide6.QtGui import QColor, QPainter, QPixmap
+
         colour = QColor(theme.BUY if running else theme.NEUTRAL)
         pix = QPixmap(self._size, self._size)
         pix.fill(Qt.GlobalColor.transparent)
@@ -190,17 +210,21 @@ class StatusDot(QLabel):
         self.setPixmap(pix)
 
 
-class EmptyState(QFrame):
-    """Shown where a list has no content yet."""
+class EmptyState(QWidget):
+    """Shown where a list has no content yet.
+
+    Unbounded on purpose -- an empty state inside a drawn box reads as a
+    broken panel, whereas centred text on the page reads as "nothing here
+    yet", which is what it means.
+    """
 
     def __init__(self, title: str, subtitle: str = ""):
         super().__init__()
-        self.setObjectName("Card")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(30, 40, 30, 40)
-        lay.setSpacing(9)
+        lay.setContentsMargins(30, 70, 30, 70)
+        lay.setSpacing(10)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         t = QLabel(title)
@@ -213,13 +237,11 @@ class EmptyState(QFrame):
             s.setObjectName("Hint")
             s.setAlignment(Qt.AlignmentFlag.AlignCenter)
             s.setWordWrap(True)
-            # Cap the measure so the copy wraps into a readable column instead
-            # of one long line, and let it claim the height that wrapping needs.
-            s.setMaximumWidth(560)
-            # ...but not so narrow that it wraps into a thin ribbon. A wrapped
-            # QLabel's size hint is unreliable, so pin both ends of the measure.
+            # A wrapped QLabel's size hint is unreliable, so pin both ends of
+            # the measure: wide enough not to become a ribbon, narrow enough
+            # to stay a readable column, tall enough not to clip.
             s.setMinimumWidth(440)
-            # Enough rows for the longest copy; wrapped text is easy to clip.
-            s.setMinimumHeight(80)
+            s.setMaximumWidth(560)
+            s.setMinimumHeight(72)
             s.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
             lay.addWidget(s, 0, Qt.AlignmentFlag.AlignHCenter)

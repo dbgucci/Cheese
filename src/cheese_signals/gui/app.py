@@ -5,9 +5,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt, QTimer, Signal as QtSignal
-from PySide6.QtGui import QDesktopServices, QFont, QIcon
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal as QtSignal
+from PySide6.QtGui import QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -39,44 +39,80 @@ from PySide6.QtWidgets import (
 from .. import analytics, paths, profiles, storage
 from ..engine import SignalEngine
 from ..settings import DEFAULT_ASSETS, Settings
-from . import theme
+from . import models, theme
 from .branding import APP_LONG_NAME, APP_NAME, APP_TAGLINE, app_icon
+from .icons import icon as nav_icon
 from .settings_page import SettingsPage
-from .widgets import EmptyState, SignalCard, StatCard, StatusDot
+from .widgets import EmptyState, SignalCard, StatStrip, StatTile, StatusDot, hairline
 
 PAYOUT = 0.85
 
 # Row caps. The journal is meant to grow for years; the views are not meant to
-# read all of it. History shows a page, Analytics analyses a recent window.
-HISTORY_ROWS = 500
+# read all of it. History renders through a model, so its cap is about how far
+# back you'd scroll rather than about what the widget can survive.
+HISTORY_ROWS = 5_000
 ANALYTICS_ROWS = 20_000
 
-# Vertical chrome of a _card() with a title: top+bottom margins (16+16),
-# the section-title row, and the layout spacing between title and content.
-_CARD_CHROME_H = 16 + 16 + 20 + 11
+# Vertical chrome of a _card() with a title: top+bottom margins, the
+# section-title row, and the layout spacing between title and content.
+_CARD_CHROME_H = 20 + 20 + 20 + 12
+
+# Analytics slice tables: shorter rows than History, because these are dense
+# summaries read at a glance rather than a list you scroll.
+_ANALYTICS_ROW_H = 34
+
+
+def _page_layout(widget: QWidget) -> QVBoxLayout:
+    """Standard page padding and rhythm, from the spacing grid in `theme`."""
+    lay = QVBoxLayout(widget)
+    lay.setContentsMargins(
+        theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_TOP,
+        theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_BOTTOM,
+    )
+    lay.setSpacing(theme.GAP_LG)
+    return lay
 
 
 def _title_block(title: str, subtitle: str) -> QWidget:
     w = QWidget()
     lay = QVBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(3)
+    lay.setSpacing(5)
     t = QLabel(title)
     t.setObjectName("PageTitle")
     s = QLabel(subtitle)
     s.setObjectName("PageSubtitle")
     s.setWordWrap(True)
+    s.setMaximumWidth(660)
+    # A wrapped label's height is not propagated through the enclosing
+    # QHBoxLayout, so the second line gets clipped by whatever sits below.
+    # Reserving two lines up front is deterministic; measuring is not.
+    s.setMinimumHeight(38)
+    s.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.addWidget(t)
     lay.addWidget(s)
     return w
+
+
+def _page_header(title: str, subtitle: str, actions: list[QWidget]) -> QHBoxLayout:
+    """Title on the left, actions bottom-aligned on the right."""
+    row = QHBoxLayout()
+    row.setSpacing(10)
+    # The title block gets the stretch, so the subtitle wraps into a readable
+    # measure instead of being squeezed into a column by the buttons.
+    row.addWidget(_title_block(title, subtitle), 1)
+    row.addSpacing(20)
+    for w in actions:
+        row.addWidget(w, 0, Qt.AlignmentFlag.AlignBottom)
+    return row
 
 
 def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("Card")
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(18, 16, 18, 16)
-    lay.setSpacing(11)
+    lay.setContentsMargins(24, 20, 24, 20)
+    lay.setSpacing(12)
     if title:
         label = QLabel(title)
         label.setObjectName("SectionTitle")
@@ -90,56 +126,51 @@ class LivePage(QWidget):
         self.window = window
         self.cards: list[SignalCard] = []
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 20)
-        root.setSpacing(18)
-
-        header = QHBoxLayout()
-        header.addWidget(
-            _title_block(
-                "Live Signals",
-                "Signals are announced ahead of their entry minute and re-checked on every "
-                "candle until then.",
-            )
-        )
-        header.addStretch(1)
+        root = _page_layout(self)
 
         self.halt_btn = QPushButton("Halt Trading")
         self.halt_btn.setObjectName("Danger")
         self.halt_btn.setToolTip("Immediately stop placing new orders. Signals keep running.")
         self.halt_btn.clicked.connect(self.window.toggle_halt)
         self.halt_btn.setVisible(False)
-        header.addWidget(self.halt_btn)
 
         self.start_btn = QPushButton("Start Engine")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self.window.toggle_engine)
-        header.addWidget(self.start_btn)
-        root.addLayout(header)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(13)
-        self.stat_pending = StatCard("Awaiting entry", "0")
-        self.stat_today = StatCard("Signals today", "0")
-        self.stat_winrate = StatCard("Win rate", "--", f"break-even {1 / (1 + PAYOUT):.1%}")
-        self.stat_pnl = StatCard("Net P/L", "0.00")
-        for s in (self.stat_pending, self.stat_today, self.stat_winrate, self.stat_pnl):
-            stats.addWidget(s)
-        root.addLayout(stats)
+        root.addLayout(
+            _page_header(
+                "Live Signals",
+                "Signals are announced ahead of their entry minute and re-checked on every "
+                "candle until then.",
+                [self.halt_btn, self.start_btn],
+            )
+        )
+
+        self.stat_pending = StatTile("Awaiting entry", "0")
+        self.stat_today = StatTile("Signals today", "0")
+        self.stat_winrate = StatTile("Win rate", "--", f"break-even {1 / (1 + PAYOUT):.1%}")
+        self.stat_pnl = StatTile("Net P/L", "0.00")
+        root.addWidget(
+            StatStrip([self.stat_pending, self.stat_today, self.stat_winrate, self.stat_pnl])
+        )
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         holder = QWidget()
         self.cards_layout = QVBoxLayout(holder)
-        self.cards_layout.setContentsMargins(0, 0, 6, 0)
-        self.cards_layout.setSpacing(11)
+        self.cards_layout.setContentsMargins(0, 0, 8, 0)
+        self.cards_layout.setSpacing(theme.GAP)
 
         self.empty = EmptyState(
             "No active signals",
             "Start the engine and KPS will watch your OTC pairs. When a setup forms you'll "
             "get the pair, direction, and the exact minute to enter — here and on Telegram.",
         )
-        self.cards_layout.addWidget(self.empty)
+        # Equal stretch on both, so the empty state sits in the upper middle
+        # of the page rather than pinned under the stats. It is hidden once
+        # cards exist, and the trailing stretch then keeps them top-aligned.
+        self.cards_layout.addWidget(self.empty, 1)
         self.cards_layout.addStretch(1)
         scroll.setWidget(holder)
         root.addWidget(scroll, 1)
@@ -161,73 +192,87 @@ class LivePage(QWidget):
 
 
 class HistoryPage(QWidget):
-    COLUMNS = ["Time (UTC)", "Pair", "Side", "Conf.", "Setup", "Result", "P/L", "Why"]
-
     def __init__(self, window: "MainWindow"):
         super().__init__()
         self.window = window
+        self._rows: list[dict] = []
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 20)
-        root.setSpacing(16)
+        root = _page_layout(self)
 
-        header = QHBoxLayout()
-        header.addWidget(
-            _title_block(
-                "Trade History",
-                "Every settled signal with the reason it won or lost. Stored permanently in your "
-                "data folder.",
-            )
-        )
-        header.addStretch(1)
         export = QPushButton("Export CSV")
         export.setObjectName("Ghost")
         export.clicked.connect(self.export_csv)
         folder = QPushButton("Open Data Folder")
         folder.setObjectName("Ghost")
-        folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir()))))
-        header.addWidget(export)
-        header.addWidget(folder)
-        root.addLayout(header)
+        folder.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir())))
+        )
+        root.addLayout(
+            _page_header(
+                "Trade History",
+                "Every settled signal with the reason it won or lost. Stored permanently in "
+                "your data folder.",
+                [export, folder],
+            )
+        )
 
-        self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search pair, setup, or reason…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(340)
+        self.search.textChanged.connect(self._apply_filter)
+        controls.addWidget(self.search)
+        controls.addStretch(1)
+        self.count_label = QLabel()
+        self.count_label.setObjectName("Hint")
+        controls.addWidget(self.count_label)
+        root.addLayout(controls)
+
+        # A model/view, not a QTableWidget: see gui/models.py for why. The
+        # view only asks for the rows it paints, so this stays instant as the
+        # journal grows.
+        self.model = models.TradeTableModel()
+        self.table = QTableView()
+        self.table.setModel(self.model)
         self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(theme.ROW_HEIGHT)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.table.setHorizontalScrollMode(QTableView.ScrollMode.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QTableView.ScrollMode.ScrollPerPixel)
+
         hh = self.table.horizontalHeader()
-        for i in range(len(self.COLUMNS) - 1):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(len(self.COLUMNS) - 1, QHeaderView.ResizeMode.Stretch)
+        hh.setHighlightSections(False)
+        # Fixed widths, never ResizeToContents: measuring every cell is what
+        # made this tab take 90 seconds to open on a large journal.
+        for i, width in enumerate(models.COLUMN_WIDTHS):
+            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(i, width)
+        hh.setSectionResizeMode(len(models.COLUMN_WIDTHS), QHeaderView.ResizeMode.Stretch)
+
         root.addWidget(self.table, 1)
 
     def refresh(self) -> None:
-        # Only fetch the page being displayed. Loading the whole journal to
-        # render 500 rows is what made the app slow as history grew.
-        rows = list(reversed(self.window.journal.joined_results(limit=HISTORY_ROWS)))
-        self.table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            won = bool(row.get("won"))
-            ts = str(row.get("entry_at", ""))[:19].replace("T", " ")
-            values = [
-                ts,
-                str(row.get("asset", "")).replace("_otc", " OTC").upper(),
-                "BUY" if row.get("direction") == 1 else "SELL",
-                f"{float(row.get('score') or 0):.0%}",
-                str(row.get("strategy", "")),
-                "WIN" if won else "LOSS",
-                f"{float(row.get('pnl') or 0):+.2f}",
-                str(row.get("outcome_reason", "")),
-            ]
-            for c, v in enumerate(values):
-                item = QTableWidgetItem(v)
-                if c == 5:
-                    item.setForeground(Qt.GlobalColor.green if won else Qt.GlobalColor.red)
-                    f = QFont()
-                    f.setBold(True)
-                    item.setFont(f)
-                self.table.setItem(r, c, item)
+        self._rows = list(reversed(self.window.journal.joined_results(limit=HISTORY_ROWS)))
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        needle = self.search.text().strip()
+        rows = [r for r in self._rows if models.matches(r, needle)] if needle else self._rows
+        self.model.set_rows(rows)
+
+        if not self._rows:
+            self.count_label.setText("No settled trades yet.")
+        elif needle:
+            self.count_label.setText(f"{len(rows)} of {len(self._rows)} trades")
+        else:
+            self.count_label.setText(f"{len(rows)} trades")
 
     def export_csv(self) -> None:
         import csv
@@ -253,42 +298,36 @@ class AnalyticsPage(QWidget):
         super().__init__()
         self.window = window
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 20)
-        root.setSpacing(16)
-
-        header = QHBoxLayout()
-        header.addWidget(
-            _title_block(
-                "Analytics",
-                "Realised performance from your own logged trades — sliced by the dimensions the "
-                "engine can act on.",
-            )
-        )
-        header.addStretch(1)
+        root = _page_layout(self)
 
         self.filter_box = QComboBox()
         self.filter_box.addItems(analytics.FILTER_OPTIONS)
-        self.filter_box.setMinimumWidth(150)
+        self.filter_box.setMinimumWidth(160)
         self.filter_box.setToolTip(
             "Results from different builds are stored separately so a fix can be "
             "measured. 'This build only' hides trades produced by older versions."
         )
         self.filter_box.currentTextChanged.connect(lambda _: self.refresh())
-        header.addWidget(self.filter_box)
 
         refresh = QPushButton("Refresh")
         refresh.setObjectName("Ghost")
         refresh.clicked.connect(self.refresh)
-        header.addWidget(refresh)
-        root.addLayout(header)
+
+        root.addLayout(
+            _page_header(
+                "Analytics",
+                "Realised performance from your own logged trades — sliced by the dimensions "
+                "the engine can act on.",
+                [self.filter_box, refresh],
+            )
+        )
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         holder = QWidget()
         self.body = QVBoxLayout(holder)
-        self.body.setContentsMargins(0, 0, 6, 0)
-        self.body.setSpacing(14)
+        self.body.setContentsMargins(0, 0, 8, 0)
+        self.body.setSpacing(theme.GAP)
         scroll.setWidget(holder)
         root.addWidget(scroll, 1)
 
@@ -342,14 +381,20 @@ class AnalyticsPage(QWidget):
             table = QTableWidget(len(slices), 5)
             table.setHorizontalHeaderLabels(["", "Trades", "Win rate", "vs break-even", "Net P/L"])
             table.verticalHeader().setVisible(False)
-            table.verticalHeader().setDefaultSectionSize(32)
+            table.verticalHeader().setDefaultSectionSize(_ANALYTICS_ROW_H)
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            table.setAlternatingRowColors(True)
+            table.setShowGrid(False)
+            table.setFrameShape(QFrame.Shape.NoFrame)
             table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setHighlightSections(False)
+            # Safe here, unlike in History: these tables are capped at 12 rows
+            # and are built once per refresh, so measuring content is cheap.
             for i in range(1, 5):
                 table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
 
+            positive = QColor(theme.BUY_BRIGHT)
+            negative = QColor(theme.SELL_BRIGHT)
             for r, s in enumerate(slices):
                 edge = s.win_rate - be
                 cells = [
@@ -362,12 +407,12 @@ class AnalyticsPage(QWidget):
                 for c, v in enumerate(cells):
                     item = QTableWidgetItem(v)
                     if c == 3 and s.is_significant:
-                        item.setForeground(Qt.GlobalColor.green if edge > 0 else Qt.GlobalColor.red)
+                        item.setForeground(positive if edge > 0 else negative)
                     table.setItem(r, c, item)
 
-            # Header + rows + border, so the whole table is visible without
-            # its own scrollbar.
-            table_h = len(slices) * 32 + 44
+            # Header + rows, so the whole table is visible without its own
+            # scrollbar.
+            table_h = len(slices) * _ANALYTICS_ROW_H + 42
             table.setFixedHeight(table_h)
             table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             lay.addWidget(table)
@@ -403,41 +448,33 @@ class DiagnosticsPage(QWidget):
         self.window = window
         self.paused = False
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 20)
-        root.setSpacing(14)
-
-        header = QHBoxLayout()
-        header.addWidget(
-            _title_block(
-                "Diagnostics",
-                "Every pair the engine reads, each condition it checks, and the reason a "
-                "setup fired or did not. Written to a log file in your data folder too.",
-            )
-        )
-        header.addStretch(1)
+        root = _page_layout(self)
 
         self.only_fired = QCheckBox("Signals only")
         self.only_fired.stateChanged.connect(lambda _: self.refresh())
-        header.addWidget(self.only_fired)
 
         self.pause_btn = QPushButton("Pause")
         self.pause_btn.setObjectName("Ghost")
         self.pause_btn.clicked.connect(self._toggle_pause)
-        header.addWidget(self.pause_btn)
 
         clear = QPushButton("Clear")
         clear.setObjectName("Ghost")
         clear.clicked.connect(self._clear)
-        header.addWidget(clear)
 
         logs = QPushButton("Open Log Folder")
         logs.setObjectName("Ghost")
         logs.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.logs_dir())))
         )
-        header.addWidget(logs)
-        root.addLayout(header)
+
+        root.addLayout(
+            _page_header(
+                "Diagnostics",
+                "Every pair the engine reads, each condition it checks, and the reason a "
+                "setup fired or did not. Written to a log file in your data folder too.",
+                [self.only_fired, self.pause_btn, clear, logs],
+            )
+        )
 
         self.summary = QLabel("Engine not running.")
         self.summary.setObjectName("Hint")
@@ -548,43 +585,48 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("Sidebar")
-        bar.setFixedWidth(214)
+        bar.setFixedWidth(232)
         lay = QVBoxLayout(bar)
-        lay.setContentsMargins(15, 22, 15, 18)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 30, 14, 20)
+        lay.setSpacing(2)
 
+        brandbox = QVBoxLayout()
+        brandbox.setContentsMargins(12, 0, 12, 0)
+        brandbox.setSpacing(3)
         brand = QLabel(APP_NAME)
         brand.setObjectName("BrandMark")
         sub = QLabel(APP_TAGLINE)
         sub.setObjectName("BrandSub")
-        lay.addWidget(brand)
-        lay.addWidget(sub)
-        rule = QFrame()
-        rule.setObjectName("BrandRule")
-        rule.setFixedHeight(1)
-        lay.addSpacing(14)
-        lay.addWidget(rule)
-        lay.addSpacing(14)
+        brandbox.addWidget(brand)
+        brandbox.addWidget(sub)
+        lay.addLayout(brandbox)
+        lay.addSpacing(28)
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        for i, (label, _) in enumerate(
-            [("Live Signals", 0), ("History", 1), ("Analytics", 2),
-             ("Diagnostics", 3), ("Settings", 4)]
+        for i, (label, glyph) in enumerate(
+            [("Live Signals", "pulse"), ("History", "clock"), ("Analytics", "bars"),
+             ("Diagnostics", "waveform"), ("Settings", "sliders")]
         ):
-            btn = QPushButton(f"   {label}")
+            btn = QPushButton(f"  {label}")
             btn.setObjectName("NavButton")
+            btn.setIcon(nav_icon(glyph, theme.TEXT_MUTED, theme.TEXT))
+            btn.setIconSize(QSize(21, 21))
             btn.setCheckable(True)
             btn.setChecked(i == 0)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, idx=i: self._navigate(idx))
             self.nav_group.addButton(btn, i)
             lay.addWidget(btn)
 
         lay.addStretch(1)
+        lay.addWidget(hairline())
+        lay.addSpacing(14)
 
         self.sidebar_note = QLabel("Engine stopped")
         self.sidebar_note.setObjectName("Hint")
         self.sidebar_note.setWordWrap(True)
+        self.sidebar_note.setContentsMargins(12, 0, 12, 0)
         lay.addWidget(self.sidebar_note)
         return bar
 

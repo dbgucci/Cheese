@@ -43,9 +43,13 @@ included.
 - **Paper and live auto-trading**, off by default and behind a safety gate
   that fails closed (balance floor, daily loss cap, hourly trade cap, an
   explicit live confirmation).
-- **Dark gold UI** with green/red reserved strictly for market direction, a
-  built-in logo/taskbar icon, and a single standalone `.exe` with no Python
-  needed.
+- **Flat, hairline dark UI** — true-black canvas, no shadows or boxed panels,
+  an icon rail for navigation, and gold as the only accent, with green/red
+  reserved strictly for market direction. Built-in logo and taskbar icon, and
+  a single standalone `.exe` with no Python needed.
+- **History stays instant as the journal grows** — the table is a model/view
+  that renders only the rows on screen, with search across pair, setup and
+  reason. Opening 5,000 trades costs about 80 ms.
 
 ## Screenshots
 
@@ -97,8 +101,8 @@ when a 1-minute candle *closes*. To give you real warning time, detection
 and entry are separated:
 
 ```
-detected 14:31:00  →  announced immediately  →  enter 14:33:00  →  expires 14:34:00
-                          (lead = 2 min)
+detected 14:31:00  →  announced immediately  →  enter 14:32:00  →  expires 14:33:00
+                          (lead = 1 min, the default)
 ```
 
 The honest trade-off: **the market keeps moving during the lead window, so a
@@ -215,7 +219,10 @@ cannot beat those is showing you the window's drift, not skill.
 - **`sessions.py`** -- session tagging; OTC-aware (OTC trades 24/7).
 - **`engine.py`** -- the live loop wiring detection → alert → entry →
   expiry → journal, on a background thread.
-- **`gui/`** -- the PySide6 desktop app (theme, widgets, four pages).
+- **`gui/`** -- the PySide6 desktop app. `theme.py` holds the entire design
+  system (palette, spacing grid, stylesheet) so a visual change is one file;
+  `models.py` the History table model; `icons.py` the drawn nav icons;
+  `branding.py` the logo.
 - **`confluence.py`** -- combines the regime strategy (trend or
   mean-reversion, whichever is active) with the price-action confirmation:
   agreement is rewarded, disagreement is penalized hard, and a solo vote is
@@ -391,7 +398,11 @@ src/cheese_signals/
   bot.py              CLI (backtest / lab / watch)
   data/               synthetic, csv, pocket_option feeds
   notifiers/          telegram
-  gui/                PySide6 app: theme, branding, pages, settings
+  gui/                PySide6 app
+    theme.py          palette, spacing grid, the whole stylesheet
+    models.py         History table model (keeps the tab instant)
+    icons.py          nav icons, drawn rather than bundled
+    branding.py       KPS logo and .ico generation
 tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
 ```
