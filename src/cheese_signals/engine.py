@@ -30,9 +30,16 @@ Callback = Callable[..., None]
 # whatever price is available.
 SETTLEMENT_GRACE_SECONDS = 90.0
 
-# Consecutive scans with no new history before a warm-up shortfall is
-# reported as a permanent block rather than as progress.
-WARMUP_STALL_TICKS = 4
+# How long an asset may go without gaining a candle before the shortfall is
+# reported as a stall rather than as progress. Measured in seconds, not in
+# scans: the loop revisits an asset far more often than candles arrive.
+WARMUP_STALL_SECONDS = 8 * 60
+
+# Journal history is merged in below this many live candles, and this many
+# rows are read. Above the ceiling the live window already covers every
+# indicator, so the query is skipped.
+HISTORY_MERGE_CEILING = 600
+HISTORY_MERGE_LIMIT = 1500
 
 
 class SignalEngine:
@@ -87,8 +94,10 @@ class SignalEngine:
         self._stop = threading.Event()
         self._last_candle_ts: dict[str, pd.Timestamp] = {}
         self._last_signal_ts: dict[str, datetime] = {}
-        # asset -> (most candles ever seen, consecutive scans without growth)
-        self._warmup_seen: dict[str, tuple[int, int]] = {}
+        # asset -> (most candles seen, when that high-water mark was set)
+        self._warmup_seen: dict[str, tuple[int, datetime]] = {}
+        # asset -> (first seen warming up, candle count then) for the ETA
+        self._warmup_started: dict[str, tuple[datetime, int]] = {}
         self._slow_cycle_reported = False
 
     # ------------------------------ lifecycle ------------------------------
@@ -152,25 +161,33 @@ class SignalEngine:
         self._trace(asset, "ERROR", summary, checks=rest)
         self.on_error(f"{asset}: {text}" if asset != "engine" else text)
 
-    def _warmup_trace(self, asset: str, have: int, required: int) -> None:
-        """Report a warm-up shortfall, and say when it will never resolve.
+    def _warmup_trace(self, asset: str, have: int, required: int, now: datetime) -> None:
+        """Report a warm-up shortfall, with an ETA, and flag a genuine stall.
 
-        "WARMING UP 145 candles, need 220" looks like progress. If the feed
-        only ever holds ~145 bars it is not progress -- it is a permanent
-        block that will suppress every signal forever, and it needs to read
-        that way rather than scrolling past once a minute.
+        Stalling is measured in *elapsed time*, not in scans. Counting scans
+        was wrong by a wide margin: the loop revisits an asset every few
+        seconds while a 1-minute candle arrives at most once a minute, so four
+        consecutive scans without growth is the normal case, not a fault. That
+        version cried BLOCKED 51 times on one asset in 26 minutes while the
+        feed was filling perfectly well.
         """
-        best, stalls = self._warmup_seen.get(asset, (0, 0))
+        best, since = self._warmup_seen.get(asset, (0, now))
         if have > best:
-            best, stalls = have, 0
-        else:
-            stalls += 1
-        self._warmup_seen[asset] = (best, stalls)
+            best, since = have, now
+        self._warmup_seen[asset] = (best, since)
 
-        if stalls < WARMUP_STALL_TICKS:
+        stalled_for = (now - since).total_seconds()
+        candle = max(self.settings.timeframe_seconds, 1)
+
+        if stalled_for < WARMUP_STALL_SECONDS:
+            rate = self._warmup_rate(asset, have, now)
+            eta = ""
+            if rate and rate > 0:
+                minutes = (required - have) / rate
+                eta = f" — about {minutes:.0f} min to go at {rate:.1f} candles/min"
             self._trace(
                 asset, "WARMING UP",
-                f"{have} candles, need {required} for {self.settings.strategy}",
+                f"{have} candles, need {required} for {self.settings.strategy}{eta}",
                 candles=have,
             )
             return
@@ -178,10 +195,11 @@ class SignalEngine:
         shortfall = required - have
         self._trace(
             asset, "BLOCKED",
-            f"stuck at ~{best} candles, {shortfall} short of the {required} "
-            f"'{self.settings.strategy}' needs — no signal can ever fire",
+            f"stuck at {best} candles for {stalled_for / 60:.0f} min, {shortfall} short "
+            f"of the {required} '{self.settings.strategy}' needs",
             checks=[
-                "The feed is not returning more history, so waiting will not fix this.",
+                f"No new candle in {stalled_for / candle:.0f} candle intervals — the feed "
+                "has stopped delivering, so waiting is unlikely to fix this.",
                 f"Lower the requirement: Settings -> Strategy -> Trend EMA period "
                 f"(needs period + 20 bars; {best} candles allows about {max(best - 20, 5)}).",
                 "Or pick a setup with a shorter warm-up: support_resistance needs "
@@ -189,8 +207,42 @@ class SignalEngine:
             ],
             candles=have,
         )
-        # Report once per stall episode rather than every tick.
-        self._warmup_seen[asset] = (best, 0)
+        # Reset the clock so this is reported occasionally, not every scan.
+        self._warmup_seen[asset] = (best, now)
+
+    def _warmup_rate(self, asset: str, have: int, now: datetime) -> Optional[float]:
+        """Candles per minute since this asset was first seen warming up."""
+        first = self._warmup_started.setdefault(asset, (now, have))
+        elapsed = (now - first[0]).total_seconds() / 60.0
+        if elapsed < 2.0:
+            return None      # too short a window to extrapolate from
+        gained = have - first[1]
+        return gained / elapsed if gained > 0 else None
+
+    def _history_for(self, asset: str, live) -> Optional[pd.DataFrame]:
+        """Live candles extended backwards with what the journal already holds.
+
+        The broker's live stream only returns a couple of hours of history and
+        refills it slowly, so an EMA 200 needs hours of uptime to warm up --
+        and used to start from nothing again after every restart. The journal
+        has been recording candles all along; reading them back makes the
+        warm-up cumulative instead of per-session.
+
+        The live rows win on overlap: they are the authoritative current view,
+        and a stored bar could in principle be stale.
+        """
+        if live is None or len(live) == 0:
+            return live
+        if len(live) >= HISTORY_MERGE_CEILING:
+            return live      # already plenty; skip the query entirely
+
+        stored = self.journal.load_candles(asset, limit=HISTORY_MERGE_LIMIT)
+        if stored is None or len(stored) == 0:
+            return live
+
+        merged = pd.concat([stored, live])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        return merged
 
     def _feed_for(self, asset: str):
         if asset not in self._feeds:
@@ -256,7 +308,14 @@ class SignalEngine:
             return
 
         feed = self._feed_for(asset)
-        df = feed.get_candles(500)
+        live = feed.get_candles(500)
+
+        # Store first, gate second. The other way round -- which is what this
+        # did -- meant nothing was ever written while warming up, so every
+        # restart began again from whatever short window the broker happened
+        # to return, and the warm-up could never finish.
+        self.journal.record_candles(asset, live)
+        df = self._history_for(asset, live)
 
         # Each strategy needs enough history to warm its slowest indicator.
         # Reporting the shortfall matters: a feed that never returns enough
@@ -267,7 +326,7 @@ class SignalEngine:
         )
         have = 0 if df is None else len(df)
         if have < required:
-            self._warmup_trace(asset, have, required)
+            self._warmup_trace(asset, have, required, now)
             return
         self._warmup_seen.pop(asset, None)
 
@@ -275,8 +334,6 @@ class SignalEngine:
         if self._last_candle_ts.get(asset) == latest_ts:
             return  # no new closed candle yet; nothing has changed to report
         self._last_candle_ts[asset] = latest_ts
-
-        self.journal.record_candles(asset, df.tail(50))
 
         profile = profiles.profile_for(asset)
         result, strategy_name, features = self._evaluate(df, asset, profile)

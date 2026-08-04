@@ -134,39 +134,18 @@ def test_an_exception_with_no_message_still_reports_something(tmp_path):
 
 
 # ------------------------------- warm-up stall -------------------------------
-def test_a_growing_feed_reports_progress_not_a_block(tmp_path):
-    eng, _ = _engine(tmp_path, lambda a: _Feed(100, grows=True))
-    for _ in range(engine_mod.WARMUP_STALL_TICKS + 2):
-        eng._tick()
-
-    outcomes = {t.outcome for t in eng.traces.recent()}
-    assert "WARMING UP" in outcomes
-    assert "BLOCKED" not in outcomes, "a feed that is still filling is not blocked"
-
-
-def test_a_stalled_feed_is_reported_as_permanently_blocked(tmp_path):
-    """145 candles forever, needing 220, is not 'warming up'."""
+# Warm-up progress, stall detection and the journal-backed history that makes
+# warm-up survive a restart are covered in tests/test_warmup_history.py, which
+# can advance the clock. The check here is only that a short feed still
+# reports rather than failing silently.
+def test_a_short_feed_reports_instead_of_going_quiet(tmp_path):
     eng, _ = _engine(tmp_path, lambda a: _Feed(145))
-    for _ in range(engine_mod.WARMUP_STALL_TICKS + 2):
-        eng._tick()
+    eng._tick()
 
-    blocked = [t for t in eng.traces.recent() if t.outcome == "BLOCKED"]
-    assert blocked, "a feed stuck below the requirement must say so"
-    trace = blocked[0]
-    assert "no signal can ever fire" in trace.summary
-    # And it must say what to actually do about it.
-    body = trace.as_text()
-    assert "Trend EMA period" in body
-    assert "support_resistance" in body
-
-
-def test_the_block_is_not_repeated_every_tick(tmp_path):
-    eng, _ = _engine(tmp_path, lambda a: _Feed(145))
-    for _ in range(engine_mod.WARMUP_STALL_TICKS * 3):
-        eng._tick()
-
-    blocked = [t for t in eng.traces.recent() if t.outcome == "BLOCKED"]
-    assert len(blocked) <= 3, f"BLOCKED repeated {len(blocked)} times; it should be occasional"
+    traces = eng.traces.recent()
+    assert traces, "a feed too short to trade must say so, not scroll past"
+    assert traces[-1].outcome in ("WARMING UP", "BLOCKED")
+    assert "need 220" in traces[-1].summary
 
 
 # ------------------------------ scan cycle time ------------------------------
