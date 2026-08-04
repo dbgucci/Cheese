@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from .. import setups as setups_mod
 from .. import triggers as trig
-from ..settings import DEFAULT_ASSETS
+from ..settings import DEFAULT_ASSETS, parse_assets
 from . import theme
 
 
@@ -311,11 +311,26 @@ class SettingsPage(QWidget):
         lay.setContentsMargins(2, 6, 14, 16); lay.setSpacing(10)
 
         box, grid = _group("Pairs to watch")
-        self.assets_edit = QTextEdit("\n".join(s.assets))
+        self.assets_edit = QTextEdit()
+        # setPlainText, never the constructor: QTextEdit(str) treats the string
+        # as rich text, where a newline is just whitespace, so the constructor
+        # silently joins every pair onto one line. Combined with a parser that
+        # split on newlines only, merely opening Settings and saving again
+        # turned the whole watchlist into a single unusable symbol.
+        self.assets_edit.setPlainText("\n".join(s.assets))
         self.assets_edit.setMaximumHeight(150)
         grid.addWidget(self.assets_edit, 0, 0, 1, 2)
+        # Show what was actually understood. Silently mis-parsing a watchlist
+        # produces a broker error that reads like an authentication failure,
+        # so the parse result has to be visible at the point of entry.
+        self.assets_summary = _group_hint(grid, 1, "")
         lay.addWidget(box)
-        lay.addWidget(_hint("One per line. Pocket Option OTC symbols end in _otc, e.g. EURUSD_otc."))
+        lay.addWidget(_hint(
+            "One per line, or separated by commas or spaces — pasting a row of "
+            "pairs works. Pocket Option OTC symbols end in _otc, e.g. EURUSD_otc."
+        ))
+        self.assets_edit.textChanged.connect(self._refresh_assets_summary)
+        self._refresh_assets_summary()
 
         box, grid = _group("Data source")
         self.source = QComboBox(); self.source.addItems(["synthetic", "pocket_option"])
@@ -419,8 +434,24 @@ class SettingsPage(QWidget):
         s.min_balance = self.min_balance.value()
         s.restrict_to_sessions = self.restrict_sessions.isChecked()
         s.allowed_sessions = [x.strip() for x in self.sessions_edit.text().split(",") if x.strip()]
-        s.assets = [a.strip() for a in self.assets_edit.toPlainText().splitlines() if a.strip()]
+        s.assets = parse_assets(self.assets_edit.toPlainText())[0]
         return s
+
+    def _refresh_assets_summary(self):
+        valid, rejected = parse_assets(self.assets_edit.toPlainText())
+        parts = [f"{len(valid)} pair{'' if len(valid) == 1 else 's'} recognised"]
+        if valid:
+            shown = ", ".join(valid[:6]) + (" …" if len(valid) > 6 else "")
+            parts.append(shown)
+        if rejected:
+            parts.append(
+                f"not understood: {', '.join(rejected[:4])}"
+                + (" …" if len(rejected) > 4 else "")
+            )
+        self.assets_summary.setText("  ·  ".join(parts))
+        self.assets_summary.setStyleSheet(
+            f"color: {theme.WARN};" if (rejected or not valid) else ""
+        )
 
     def refresh_warnings(self):
         problems = self._pending_settings().conflicts()
@@ -471,7 +502,24 @@ class SettingsPage(QWidget):
         if mode != "live":
             confirmed = False
 
-        assets = [a.strip() for a in self.assets_edit.toPlainText().splitlines() if a.strip()]
+        assets, rejected = parse_assets(self.assets_edit.toPlainText())
+        if rejected:
+            keep = QMessageBox.question(
+                self, "Pairs",
+                f"{len(rejected)} entr{'y' if len(rejected) == 1 else 'ies'} in the pairs "
+                f"list did not look like a symbol and will be dropped:\n\n  "
+                + "\n  ".join(rejected[:10])
+                + ("\n  …" if len(rejected) > 10 else "")
+                + f"\n\nSave the remaining {len(assets)} pair(s)?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            )
+            if keep != QMessageBox.StandardButton.Save:
+                return
+
+        # Normalising rewrites the box, so what was saved is what is shown --
+        # otherwise the field keeps displaying text the engine is not using.
+        self.assets_edit.setPlainText("\n".join(assets))
+
         self.window.settings.update(
             strategy=self.strategy.currentText(),
             trigger=self.trigger.currentText(),

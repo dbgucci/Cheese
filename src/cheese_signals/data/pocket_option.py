@@ -41,6 +41,7 @@ from typing import Optional
 
 import pandas as pd
 
+from .. import settings as settings_mod
 from .base import CandleFeed, validate_candles
 
 # Enough 1-minute history for the indicators (ADX/EMA warm-up) plus the
@@ -117,6 +118,24 @@ class PocketOptionFeed(CandleFeed):
             from BinaryOptionsToolsV2.pocketoption import PocketOption
         except ImportError as exc:
             raise ImportError(_missing_dependency_message(exc)) from exc
+
+        # Catch a malformed symbol here rather than letting the broker reject
+        # it. Its reply ("Invalid asset: <the whole string>") ends with advice
+        # about authentication, so a watchlist that was mis-split reads as an
+        # expired SSID and sends the user chasing the wrong problem.
+        valid, _ = settings_mod.parse_assets(asset)
+        if len(valid) != 1 or valid[0] != asset:
+            raise ValueError(
+                f"'{asset}' is not a single Pocket Option symbol."
+                + (
+                    f"\nIt looks like {len(valid)} symbols run together. Put one per "
+                    "line in Settings -> Pairs & Data."
+                    if len(valid) > 1
+                    else "\nExpected something like 'EURUSD_otc'."
+                )
+                + "\nThis is a settings problem, not an authentication one — your "
+                "SSID is not involved."
+            )
 
         ssid = ssid or os.environ.get("POCKET_OPTION_SSID")
         if not ssid:

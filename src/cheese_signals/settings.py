@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -18,6 +19,51 @@ DEFAULT_ASSETS = [
     "USDCAD_otc",
     "EURJPY_otc",
 ]
+
+
+# Any run of whitespace, commas or semicolons separates one symbol from the
+# next. Splitting on newlines alone meant a list pasted on one line became a
+# single 200-character "asset name", which the broker then rejected with an
+# error that looked like an authentication problem.
+_ASSET_SEPARATORS = re.compile(r"[\s,;]+")
+
+# A Pocket Option symbol: a currency/instrument code, optionally suffixed
+# _otc in any casing. Deliberately loose about the code itself -- the platform
+# lists gold, indices and crypto too, and hardcoding a currency list here would
+# reject valid instruments. A name that passes this but is not tradeable is
+# caught at the feed, per asset, with a message that says so.
+_ASSET_PATTERN = re.compile(r"^[A-Za-z0-9]{3,12}(_otc)?$", re.IGNORECASE)
+
+# Everything from a '#' to end of line. People annotate watchlists.
+_COMMENT = re.compile(r"#[^\n]*")
+
+
+def parse_assets(text: str) -> tuple[list[str], list[str]]:
+    """Split a pasted watchlist into symbols, returning (valid, rejected).
+
+    Accepts one per line, comma-separated, space-separated, or any mixture,
+    because all four are what people actually paste. ``#`` starts a comment.
+    Symbols are normalised to the platform's own casing (``EURUSD_otc``) and
+    de-duplicated with their order preserved.
+    """
+    valid: list[str] = []
+    rejected: list[str] = []
+    seen: set[str] = set()
+
+    for raw in _ASSET_SEPARATORS.split(_COMMENT.sub(" ", text or "")):
+        token = raw.strip()
+        if not token:
+            continue
+        if not _ASSET_PATTERN.match(token):
+            rejected.append(token)
+            continue
+        base, _, suffix = token.partition("_")
+        name = base.upper() + ("_" + suffix.lower() if suffix else "")
+        if name not in seen:
+            seen.add(name)
+            valid.append(name)
+
+    return valid, rejected
 
 
 @dataclass
@@ -132,7 +178,17 @@ class Settings:
         except (json.JSONDecodeError, OSError):
             return cls()
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        s = cls(**{k: v for k, v in raw.items() if k in known})
+
+        # Repair a watchlist saved by an older build, which split only on
+        # newlines: a list pasted on one line was stored as a single symbol
+        # made of every pair joined by spaces. Re-splitting it here means the
+        # user does not have to notice and retype anything.
+        repaired, _ = parse_assets(" ".join(s.assets))
+        if repaired and repaired != s.assets:
+            s.assets = repaired
+            s.save()
+        return s
 
     def save(self) -> None:
         paths.settings_path().write_text(
