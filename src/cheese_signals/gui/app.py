@@ -150,10 +150,9 @@ class LivePage(QWidget):
         self.stat_pending = StatTile("Awaiting entry", "0")
         self.stat_today = StatTile("Signals today", "0")
         self.stat_winrate = StatTile("Win rate", "--", f"break-even {1 / (1 + PAYOUT):.1%}")
-        self.stat_pnl = StatTile("Net P/L", "0.00")
-        root.addWidget(
-            StatStrip([self.stat_pending, self.stat_today, self.stat_winrate, self.stat_pnl])
-        )
+        # No Net P/L tile: with a fixed stake it is win rate restated, so it
+        # adds a second number that can only ever agree with the first.
+        root.addWidget(StatStrip([self.stat_pending, self.stat_today, self.stat_winrate]))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -378,8 +377,8 @@ class AnalyticsPage(QWidget):
             if not slices:
                 continue
             frame, lay = _card(title)
-            table = QTableWidget(len(slices), 5)
-            table.setHorizontalHeaderLabels(["", "Trades", "Win rate", "vs break-even", "Net P/L"])
+            table = QTableWidget(len(slices), 4)
+            table.setHorizontalHeaderLabels(["", "Trades", "Win rate", "vs break-even"])
             table.verticalHeader().setVisible(False)
             table.verticalHeader().setDefaultSectionSize(_ANALYTICS_ROW_H)
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -390,7 +389,7 @@ class AnalyticsPage(QWidget):
             table.horizontalHeader().setHighlightSections(False)
             # Safe here, unlike in History: these tables are capped at 12 rows
             # and are built once per refresh, so measuring content is cheap.
-            for i in range(1, 5):
+            for i in range(1, 4):
                 table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
 
             positive = QColor(theme.BUY_BRIGHT)
@@ -402,7 +401,6 @@ class AnalyticsPage(QWidget):
                     str(s.trades),
                     f"{s.win_rate:.1%}",
                     f"{edge:+.1%}" + ("" if s.is_significant else "  (low sample)"),
-                    f"{s.pnl:+.2f}",
                 ]
                 for c, v in enumerate(cells):
                     item = QTableWidgetItem(v)
@@ -844,9 +842,6 @@ class MainWindow(QMainWindow):
                 f"{st['win_rate']:.1%}",
                 f"break-even {be:.1%} · {int(st['trades'])} trades",
                 colour,
-            )
-            self.live_page.stat_pnl.set_value(
-                f"{st['pnl']:+.2f}", accent=theme.BUY if st["pnl"] >= 0 else theme.SELL
             )
         else:
             self.live_page.stat_winrate.set_value("--", f"break-even {be:.1%}")

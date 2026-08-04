@@ -72,11 +72,15 @@ class TelegramNotifier:
         lead = max(int(signal.seconds_until_entry(datetime.now(timezone.utc))), 0)
         arrow = "🟢 BUY (CALL)" if signal.direction == 1 else "🔴 SELL (PUT)"
 
+        # State the duration, not just the two clock times. This is the number
+        # typed into the platform's expiry box, and inferring it by subtracting
+        # two timestamps under time pressure is how the wrong one gets set.
+        minutes = max(int(round((expiry - entry).total_seconds() / 60)), 1)
         text = (
             f"*{arrow}*\n"
             f"Pair: *{_esc(signal.asset)}*\n"
             f"Enter at: *{entry:%H:%M:%S} UTC*  (in {lead // 60}m {lead % 60}s)\n"
-            f"Expiry: *{expiry:%H:%M:%S} UTC*\n"
+            f"Expiry: *{minutes} min* — closes {expiry:%H:%M:%S} UTC\n"
             f"Confidence: *{signal.score:.0%}*\n"
             f"Setup: {_esc(signal.strategy)}\n"
             f"_{_esc(signal.reason)}_"
@@ -98,8 +102,15 @@ class TelegramNotifier:
         """
         sig = outcome.signal
         icon = "✅ *WIN*" if outcome.won else "❌ *LOSS*"
+        entry = sig.entry_at.astimezone(timezone.utc)
+        expiry = sig.expiry_at.astimezone(timezone.utc)
+        minutes = max(int(round((expiry - entry).total_seconds() / 60)), 1)
+        # Name the window this result is for. Without it a result arriving at
+        # 06:11 for a trade that expired at 06:10 is impossible to match back
+        # to the signal it belongs to.
         text = (
             f"{icon} — {_esc(sig.asset)} {sig.side}\n"
+            f"{entry:%H:%M:%S} → {expiry:%H:%M:%S} UTC ({minutes} min)\n"
             f"Entry {outcome.entry_price:.5f} → Exit {outcome.exit_price:.5f} "
             f"({outcome.move_pips:+.1f} pips)\n"
             f"P/L: *{outcome.pnl:+.2f}*\n"
@@ -115,6 +126,5 @@ class TelegramNotifier:
         return self.send(
             f"📊 *Daily summary*\n"
             f"{wins}W / {losses}L — win rate *{wr:.1%}*\n"
-            f"Break-even needed: {be:.1%} ({verdict} break-even)\n"
-            f"Net P/L: *{pnl:+.2f}*"
+            f"Break-even needed: {be:.1%} ({verdict} break-even)"
         )

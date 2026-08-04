@@ -238,8 +238,8 @@ def suggestions(rows: list[dict[str, Any]], payout: float = 0.85) -> list[str]:
     out: list[str] = []
     ov = overall(rows)
     out.append(
-        f"Overall: {ov.trades} trades, {ov.win_rate:.1%} win rate vs {be:.1%} needed to break even "
-        f"({ov.pnl:+.2f} net)."
+        f"Overall: {ov.trades} trades, {ov.win_rate:.1%} win rate vs {be:.1%} needed to "
+        f"break even ({ov.win_rate - be:+.1%})."
     )
 
     # Drift first: it determines whether the per-slice numbers below mean

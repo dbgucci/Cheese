@@ -171,6 +171,10 @@ def test_send_result_returns_status(monkeypatch):
     class _Sig:
         asset = "EURUSD_otc"
         side = "BUY"
+        # The result message names the window the outcome belongs to, so a
+        # stub signal needs its times.
+        entry_at = datetime(2026, 8, 4, 6, 9, tzinfo=timezone.utc)
+        expiry_at = datetime(2026, 8, 4, 6, 10, tzinfo=timezone.utc)
 
     class _Out:
         signal = _Sig()

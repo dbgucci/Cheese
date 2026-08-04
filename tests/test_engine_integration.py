@@ -49,10 +49,19 @@ class FakeFeed:
     ``append`` adds a closed candle at a specific timestamp, so entry and
     expiry can be priced at their own moments rather than both reading
     whatever the latest candle happens to be.
+
+    Candles are stamped with their **open** time, as the real feed does, so
+    the bar delivering the price at moment ``T`` is stamped ``T - 60s``.
+    ``closing_at`` expresses that directly, which keeps the tests readable
+    and stops them from quietly encoding an off-by-one-candle convention.
     """
 
     def __init__(self, df):
         self.df = df
+
+    def closing_at(self, ts, close, timeframe_seconds=60):
+        """Add the bar whose close *is* the price at ``ts``."""
+        self.append(ts - timedelta(seconds=timeframe_seconds), close)
 
     def get_candles(self, count):
         return self.df.tail(count)
@@ -141,14 +150,14 @@ def test_full_lifecycle_settles_a_win_into_the_journal(journal):
     eng._scan_asset("EURUSD_otc", detected)
     sig = cap["signals"][0]
 
-    # Enter at the scheduled minute.
-    feed.append(sig.entry_at, 1.1000)
+    # Enter at the scheduled minute, priced by the bar that closes then.
+    feed.closing_at(sig.entry_at, 1.1000)
     eng._enter(sig, sig.entry_at)
     assert sig.status == "active"
     assert sig.entry_price == pytest.approx(1.1000)
 
     # Price falls by expiry; the signal predicted DOWN, so this is a win.
-    feed.append(sig.expiry_at, 1.0994)
+    feed.closing_at(sig.expiry_at, 1.0994)
     eng._settle(sig, sig.expiry_at)
 
     assert len(cap["results"]) == 1

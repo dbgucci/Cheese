@@ -562,25 +562,34 @@ class SignalEngine:
 
     # --------------------------- entry / settle ---------------------------
     def _price_at(self, asset: str, ts: datetime) -> Optional[float]:
-        """Close of the last candle that had closed at or before ``ts``.
+        """The traded price at the instant ``ts``.
 
-        Entry and expiry must be priced at their own moments. Using "latest
-        close" for both would compare a price against itself whenever the feed
-        buffer had not ticked over yet, settling a live trade as a flat loss.
+        A candle is stamped with its **open** time, so the bar stamped ``T``
+        spans ``[T, T + timeframe)`` and its close is the price at
+        ``T + timeframe``. The price *at* ``ts`` is therefore the close of the
+        bar stamped ``ts - timeframe`` -- the one that finished exactly then.
+
+        Getting this wrong is not a rounding detail. Selecting the bar stamped
+        ``ts`` instead returns the price one whole candle *after* ``ts``, so a
+        1-minute option was being scored over the two minutes from entry to
+        one minute past expiry. Entry happened to be priced correctly only
+        because the entry bar has not closed yet when entry is taken; expiry
+        was priced a minute late because settlement deliberately waited for
+        that bar to appear.
         """
         try:
             df = self._feed_for(asset).get_candles(60)
             if df is None or df.empty:
                 return None
-            stamp = pd.Timestamp(ts)
-            if stamp.tzinfo is None:
-                stamp = stamp.tz_localize("UTC")
+            cutoff = pd.Timestamp(ts) - pd.Timedelta(seconds=self.settings.timeframe_seconds)
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.tz_localize("UTC")
             if df.index.tz is None:
                 df = df.tz_localize("UTC")
-            at_or_before = df.index[df.index <= stamp]
-            if len(at_or_before):
-                return float(df.loc[at_or_before[-1], "close"])
-            return float(df["close"].iloc[-1])
+            closed_by_then = df.index[df.index <= cutoff]
+            if len(closed_by_then):
+                return float(df.loc[closed_by_then[-1], "close"])
+            return float(df["close"].iloc[0])
         except Exception:
             return None
 
@@ -644,19 +653,27 @@ class SignalEngine:
         )
         self.on_status(f"{self.trade_mode.upper()} order placed: {sig.asset} {sig.side} {stake:.2f}")
 
-    def _has_candle_at_or_after(self, asset: str, ts: datetime) -> bool:
-        """Whether the candle covering ``ts`` has actually closed and arrived."""
+    def _has_candle_closing_at(self, asset: str, ts: datetime) -> bool:
+        """Whether the bar that *closes* at ``ts`` has arrived.
+
+        That bar is stamped ``ts - timeframe``. The previous version waited for
+        a bar stamped ``ts``, which does not close until a full candle after
+        expiry -- so every result landed roughly 60 seconds later than it
+        could have, and was priced from that later bar. Waiting for the bar
+        that ends at expiry gives the correct price at the earliest moment it
+        exists.
+        """
         try:
             df = self._feed_for(asset).get_candles(5)
             if df is None or df.empty:
                 return False
-            stamp = pd.Timestamp(ts)
-            if stamp.tzinfo is None:
-                stamp = stamp.tz_localize("UTC")
+            needed = pd.Timestamp(ts) - pd.Timedelta(seconds=self.settings.timeframe_seconds)
+            if needed.tzinfo is None:
+                needed = needed.tz_localize("UTC")
             last = df.index[-1]
             if last.tzinfo is None:
                 last = last.tz_localize("UTC")
-            return last >= stamp
+            return last >= needed
         except Exception:
             return False
 
@@ -665,12 +682,13 @@ class SignalEngine:
         # the feed. Settling before it arrives prices the exit from the entry
         # candle, so exit == entry and the trade is recorded as a guaranteed
         # loss that never happened. Wait for the candle, within a grace period.
-        if not self._has_candle_at_or_after(sig.asset, sig.expiry_at):
+        if not self._has_candle_closing_at(sig.asset, sig.expiry_at):
             waited = (now - sig.expiry_at).total_seconds()
             if waited < SETTLEMENT_GRACE_SECONDS:
                 if waited < 2:   # report once, not on every poll
                     self._trace(sig.asset, "AWAITING CANDLE",
-                                f"expiry reached; waiting for the {sig.expiry_at:%H:%M} candle")
+                                f"expiry reached; waiting for the bar closing at "
+                                f"{sig.expiry_at:%H:%M:%S}")
                 return  # try again on the next tick
             self.on_status(
                 f"{sig.asset}: expiry candle never arrived after "

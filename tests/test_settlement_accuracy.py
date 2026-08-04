@@ -56,17 +56,19 @@ def test_settlement_waits_for_the_expiry_candle(journal):  # noqa: F811
     eng._scan_asset("EURUSD_otc", datetime(2026, 8, 3, 14, 30, 20, tzinfo=timezone.utc))
     sig = cap["signals"][0]
 
-    feed.append(sig.entry_at, 1.1000)
+    feed.closing_at(sig.entry_at, 1.1000)
     eng._enter(sig, sig.entry_at)
 
-    # Expiry has arrived but its candle has not. Must NOT settle yet.
+    # Expiry has arrived but the bar that closes at expiry has not. Must NOT
+    # settle yet -- pricing the exit from an earlier bar was what produced
+    # the fabricated "exit == entry" losses.
     eng._settle(sig, sig.expiry_at)
     assert cap["results"] == []
     assert journal.summary_counts()["settled"] == 0
     assert sig.status == "active"
 
-    # Once the expiry candle lands, it settles on the correct price.
-    feed.append(sig.expiry_at, 1.0994)
+    # Once that bar lands, it settles on the correct price.
+    feed.closing_at(sig.expiry_at, 1.0994)
     eng._settle(sig, sig.expiry_at)
     assert len(cap["results"]) == 1
     assert cap["results"][0].exit_price == pytest.approx(1.0994)
