@@ -148,3 +148,53 @@ def test_the_recommended_defaults_raise_no_conflict():
     s = Settings()
     assert s.win_cooldown_minutes == 5 and s.loss_cooldown_minutes == 0
     assert s.conflicts() == []
+
+
+# --------------------- settings are a snapshot, not a live wire ---------------------
+def test_a_running_engine_ignores_later_settings_edits(tmp_path):
+    """The Settings page promises "changes apply on the next engine start".
+
+    The GUI hands the engine the same Settings object that page mutates, so
+    without a snapshot a save landed on a running engine immediately --
+    changing the setup or trigger mid-session and corrupting whatever sample
+    was being collected, with nothing in the UI to say it had happened.
+    """
+    live = Settings()
+    live.trigger = "bos"
+    live.strategy = "trend_continuation"
+    eng = engine_mod.SignalEngine(
+        settings=live, journal=storage.Journal(tmp_path / "snap.db"),
+        feed_factory=lambda a: None,
+    )
+
+    live.trigger = "momentum"          # someone saves Settings while it runs
+    live.strategy = "reversal"
+    live.assets = ["XAUUSD_otc"]
+
+    assert eng.settings.trigger == "bos"
+    assert eng.settings.strategy == "trend_continuation"
+    assert "XAUUSD_otc" not in eng.settings.assets
+
+
+def test_the_snapshot_still_reflects_settings_at_construction(tmp_path):
+    live = Settings()
+    live.trigger = "momentum"
+    live.win_cooldown_minutes = 11
+    eng = engine_mod.SignalEngine(
+        settings=live, journal=storage.Journal(tmp_path / "snap2.db"),
+        feed_factory=lambda a: None,
+    )
+    assert eng.settings.trigger == "momentum"
+    assert eng.settings.win_cooldown_minutes == 11
+
+
+def test_the_snapshot_does_not_share_mutable_fields(tmp_path):
+    """A shallow copy would leave the asset list aliased."""
+    live = Settings()
+    live.assets = ["EURUSD_otc"]
+    eng = engine_mod.SignalEngine(
+        settings=live, journal=storage.Journal(tmp_path / "snap3.db"),
+        feed_factory=lambda a: None,
+    )
+    live.assets.append("GBPUSD_otc")
+    assert eng.settings.assets == ["EURUSD_otc"], "the engine's watchlist was mutated"

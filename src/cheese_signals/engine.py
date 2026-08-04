@@ -7,6 +7,7 @@ signals, so the engine stays importable and testable without a GUI.
 
 from __future__ import annotations
 
+import copy
 import threading
 import time as time_mod
 import traceback
@@ -57,7 +58,17 @@ class SignalEngine:
         on_error: Optional[Callback] = None,
         on_trace: Optional[Callback] = None,
     ):
-        self.settings = settings
+        # A snapshot, not the caller's object. The GUI hands over the same
+        # Settings instance the Settings page mutates, so without this a save
+        # took effect on a running engine immediately -- silently changing the
+        # setup or trigger mid-session and corrupting whatever sample was
+        # being collected, while the Settings page said "changes apply on the
+        # next engine start". Now that sentence is true.
+        #
+        # deepcopy, not dataclasses.replace: a shallow copy leaves `assets`
+        # and `allowed_sessions` aliased, so editing the watchlist would still
+        # reach through into a running engine.
+        self.settings = copy.deepcopy(settings)
         self.journal = journal
         self.feed_factory = feed_factory
         self.notifier = notifier
