@@ -393,13 +393,44 @@ class Journal:
             "pending": int(pending),
         }
 
-    def count_signals_since(self, iso_prefix: str) -> int:
-        """Signals detected on a given day, counted in SQL."""
+    def count_signals_since(self, iso_prefix: str, include_cancelled: bool = False) -> int:
+        """Signals detected on a given day, counted in SQL.
+
+        Cancelled signals are excluded by default. A cancelled signal is one
+        the engine withdrew before entry, so counting it as a signal makes the
+        headline number disagree with what the user was actually asked to
+        trade -- 566 on screen against a couple of dozen worth acting on.
+        """
+        sql = "SELECT COUNT(*) FROM signals WHERE detected_at >= ?"
+        if not include_cancelled:
+            sql += " AND status != 'cancelled'"
+        return int(self._conn.execute(sql, (iso_prefix,)).fetchone()[0])
+
+    def count_cancelled_since(self, iso_prefix: str) -> int:
         return int(
             self._conn.execute(
-                "SELECT COUNT(*) FROM signals WHERE detected_at >= ?", (iso_prefix,)
+                "SELECT COUNT(*) FROM signals WHERE detected_at >= ? AND status = 'cancelled'",
+                (iso_prefix,),
             ).fetchone()[0]
         )
+
+    def abandon_stale_signals(self, before_iso: str) -> int:
+        """Close out signals a previous session left hanging.
+
+        A signal is written as 'pending' the moment it fires and only becomes
+        'settled' or 'cancelled' when the engine reaches it. Closing the app
+        in between leaves the row pending forever, and those orphans
+        accumulate across every session -- which is why 'Awaiting entry' kept
+        showing a number with nothing on screen.
+        """
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE signals SET status = 'abandoned', "
+                "cancel_reason = COALESCE(cancel_reason, 'the app closed before this signal resolved') "
+                "WHERE status IN ('pending','active') AND detected_at < ?",
+                (before_iso,),
+            )
+            return cur.rowcount or 0
 
     def summary_counts(self) -> dict[str, int]:
         c = self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]

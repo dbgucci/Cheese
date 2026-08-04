@@ -183,11 +183,26 @@ class LivePage(QWidget):
             old = self.cards.pop()
             old.setParent(None)
 
+    # How long a cancelled card stays on screen. Long enough to notice why it
+    # went away, short enough that withdrawn signals do not crowd out live
+    # ones -- with a noisy trigger they outnumber them.
+    CANCELLED_LINGER_SECONDS = 90
+
     def refresh(self) -> None:
-        for c in self.cards:
-            c.refresh()
+        now = datetime.now(timezone.utc)
+        for card in list(self.cards):
+            card.refresh()
+            if self._is_expired_cancellation(card, now):
+                self.cards.remove(card)
+                card.setParent(None)
         if not self.cards:
             self.empty.setVisible(True)
+
+    def _is_expired_cancellation(self, card, now: datetime) -> bool:
+        if getattr(card.signal, "status", "") != "cancelled":
+            return False
+        since = (now - card.signal.entry_at).total_seconds()
+        return since > self.CANCELLED_LINGER_SECONDS
 
 
 class HistoryPage(QWidget):
@@ -563,6 +578,11 @@ class MainWindow(QMainWindow):
 
         self.settings = Settings.load()
         self.journal = storage.Journal()
+        # Close out anything a previous session left hanging, so History and
+        # the headline counts describe finished work rather than orphans.
+        self._abandoned = self.journal.abandon_stale_signals(
+            datetime.now(timezone.utc).isoformat()
+        )
         self._history_stale = False
         self._status_text = ""
         self._last_error: str = ""
@@ -606,7 +626,13 @@ class MainWindow(QMainWindow):
         self.history_page.refresh()
         self.analytics_page.refresh()
         self._refresh_stats()
-        self.set_status(f"Data folder: {paths.data_dir()}")
+        if self._abandoned:
+            self.set_status(
+                f"Data folder: {paths.data_dir()}   ·   closed out {self._abandoned} "
+                f"signal(s) left pending by a previous session"
+            )
+        else:
+            self.set_status(f"Data folder: {paths.data_dir()}")
 
     # ------------------------------ chrome ------------------------------
     def _build_sidebar(self) -> QWidget:
@@ -832,9 +858,20 @@ class MainWindow(QMainWindow):
         st = self.journal.stats()
         be = analytics.breakeven_win_rate(PAYOUT)
 
-        self.live_page.stat_pending.set_value(str(st["pending"]))
+        # "Awaiting entry" is a live fact, so it comes from the scheduler, not
+        # from the journal. The journal marks a row 'pending' when a signal
+        # fires and only resolves it when the engine gets there, so every
+        # signal orphaned by closing the app stayed pending forever and the
+        # count grew across sessions with nothing on screen to match it.
+        self.live_page.stat_pending.set_value(str(self._awaiting_entry()))
+
         today = datetime.now(timezone.utc).date().isoformat()
-        self.live_page.stat_today.set_value(str(self.journal.count_signals_since(today)))
+        sent = self.journal.count_signals_since(today)
+        cancelled = self.journal.count_cancelled_since(today)
+        self.live_page.stat_today.set_value(
+            str(sent),
+            f"{cancelled} cancelled before entry" if cancelled else "",
+        )
 
         if st["trades"]:
             colour = theme.BUY if st["win_rate"] >= be else theme.SELL
@@ -845,6 +882,17 @@ class MainWindow(QMainWindow):
             )
         else:
             self.live_page.stat_winrate.set_value("--", f"break-even {be:.1%}")
+
+    def _awaiting_entry(self) -> int:
+        """Signals announced but not yet entered, right now.
+
+        Zero whenever the engine is stopped: nothing can be awaiting entry if
+        nothing is watching for it.
+        """
+        eng = self.engine
+        if eng is None or not eng.is_running:
+            return 0
+        return len(eng.scheduler.awaiting_entry(datetime.now(timezone.utc)))
 
     def set_status(self, text: str) -> None:
         """Show a message, elided to fit, with the full text always reachable.
