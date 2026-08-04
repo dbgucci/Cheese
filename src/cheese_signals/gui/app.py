@@ -498,23 +498,48 @@ class DiagnosticsPage(QWidget):
             eng.traces.clear()
         self.view.clear()
 
+    # Outcomes that mean something is wrong, worst first. Listed ahead of the
+    # routine counts, because "6 error" buried after "412 warming up" is the
+    # line the user needed and did not read.
+    PROBLEMS = ("ERROR", "BLOCKED", "CONFIG WARNING")
+
+    def _set_summary(self, counts: dict) -> None:
+        if not counts:
+            self.summary.setText("Waiting for the first candle...")
+            self.summary.setObjectName("Hint")
+            self.summary.setStyleSheet("")
+            return
+
+        problems = [f"{counts[k]} {k.lower()}" for k in self.PROBLEMS if counts.get(k)]
+        routine = [
+            f"{v} {k.lower()}"
+            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
+            if k not in self.PROBLEMS
+        ]
+
+        if problems:
+            self.summary.setText(
+                "⚠ " + ", ".join(problems) + " — details below.   "
+                + ", ".join(routine)
+            )
+            self.summary.setStyleSheet(f"color: {theme.WARN}; font-weight: 600;")
+        else:
+            self.summary.setText("Recent activity: " + ", ".join(routine))
+            self.summary.setStyleSheet("")
+
     def refresh(self) -> None:
         eng = self.window.engine
         if eng is None:
             self.summary.setText(
                 "Engine not running. Start it from Live Signals and this will fill in."
             )
+            self.summary.setStyleSheet("")
             return
         if self.paused:
             return
 
         traces = eng.traces.recent(limit=250, only_fired=self.only_fired.isChecked())
-        counts = eng.traces.counts()
-        if counts:
-            parts = [f"{v} {k.lower()}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
-            self.summary.setText("Recent activity: " + ", ".join(parts))
-        else:
-            self.summary.setText("Waiting for the first candle...")
+        self._set_summary(eng.traces.counts())
 
         # Preserve the scroll position unless the user is pinned to the bottom.
         bar = self.view.verticalScrollBar()
@@ -529,6 +554,7 @@ class MainWindow(QMainWindow):
     sig_cancel = QtSignal(object, str)
     sig_result = QtSignal(object)
     sig_status = QtSignal(str)
+    sig_error = QtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -540,6 +566,8 @@ class MainWindow(QMainWindow):
         self.settings = Settings.load()
         self.journal = storage.Journal()
         self._history_stale = False
+        self._status_text = ""
+        self._last_error: str = ""
         self.engine: SignalEngine | None = None
 
         root = QWidget()
@@ -571,6 +599,7 @@ class MainWindow(QMainWindow):
         self.sig_cancel.connect(self._on_cancel)
         self.sig_result.connect(self._on_result)
         self.sig_status.connect(self.set_status)
+        self.sig_error.connect(self.show_error)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick_ui)
@@ -641,14 +670,37 @@ class MainWindow(QMainWindow):
         self.status_dot = StatusDot()
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("StatusText")
+        # Long messages must not push the clock off the bar; they are elided
+        # here and readable in full via the Details button and Diagnostics.
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(self.status_dot)
-        lay.addWidget(self.status_label)
-        lay.addStretch(1)
+        lay.addWidget(self.status_label, 1)
+
+        self.details_btn = QPushButton("Details")
+        self.details_btn.setObjectName("StatusLink")
+        self.details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_btn.setVisible(False)
+        self.details_btn.clicked.connect(self._show_last_error)
+        lay.addWidget(self.details_btn)
 
         self.clock = QLabel()
         self.clock.setObjectName("StatusText")
         lay.addWidget(self.clock)
         return bar
+
+    def _show_last_error(self) -> None:
+        """The full text of the last error, selectable so it can be pasted."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Engine error")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("The engine reported an error.")
+        box.setInformativeText(
+            "Every error is also written to Diagnostics and to the daily log "
+            "file in your data folder."
+        )
+        box.setDetailedText(self._last_error or "(no details)")
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.exec()
 
     def _navigate(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -724,7 +776,7 @@ class MainWindow(QMainWindow):
                 on_cancel=lambda s, r: self.sig_cancel.emit(s, r),
                 on_result=lambda o: self.sig_result.emit(o),
                 on_status=lambda m: self.sig_status.emit(m),
-                on_error=lambda m: self.sig_status.emit(f"Error: {m.splitlines()[0]}"),
+                on_error=lambda m: self.sig_error.emit(m),
             )
             self.engine.executor = executor
             self.engine.trade_mode = mode
@@ -800,7 +852,36 @@ class MainWindow(QMainWindow):
             self.live_page.stat_winrate.set_value("--", f"break-even {be:.1%}")
 
     def set_status(self, text: str) -> None:
-        self.status_label.setText(text)
+        """Show a message, elided to fit, with the full text always reachable.
+
+        The status bar is one line wide; a broker error can name every asset
+        on the account. Truncating without a way back to the rest is how a
+        fixable problem becomes invisible, so the full text lives in the
+        tooltip, behind the Details button, and in Diagnostics.
+        """
+        self.status_label.setToolTip(text)
+        self._status_text = text
+        self._elide_status()
+
+    def _elide_status(self) -> None:
+        metrics = self.status_label.fontMetrics()
+        width = max(self.status_label.width(), 80)
+        self.status_label.setText(
+            metrics.elidedText(self._status_text, Qt.TextElideMode.ElideRight, width)
+        )
+
+    def show_error(self, text: str) -> None:
+        self._last_error = text
+        self.details_btn.setVisible(True)
+        first = text.splitlines()[0] if text.splitlines() else text
+        self.set_status(f"Error: {first}")
+        # set_status tooltips the line it was given; an error's tooltip should
+        # be the whole thing, so hovering is enough for most of them.
+        self.status_label.setToolTip(text)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide_status()
 
     def closeEvent(self, event) -> None:
         if self.engine:

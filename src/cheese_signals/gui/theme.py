@@ -339,6 +339,12 @@ QTabBar::tab:selected {{ color: {TEXT}; background: {SURFACE_ALT}; }}
 /* ------------------------------- statusbar ----------------------------- */
 QFrame#StatusBar {{ background: {BG}; border-top: 1px solid {BORDER_SOFT}; }}
 QLabel#StatusText {{ font-size: 12px; color: {TEXT_FAINT}; }}
+QPushButton#StatusLink {{
+    background: transparent; color: {WARN};
+    border: none; padding: 2px 8px;
+    font-size: 12px; font-weight: 700; text-decoration: underline;
+}}
+QPushButton#StatusLink:hover {{ color: {GOLD_BRIGHT}; }}
 
 QTextEdit {{
     background: {SURFACE}; border: 1px solid {BORDER_SOFT};

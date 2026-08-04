@@ -30,6 +30,10 @@ Callback = Callable[..., None]
 # whatever price is available.
 SETTLEMENT_GRACE_SECONDS = 90.0
 
+# Consecutive scans with no new history before a warm-up shortfall is
+# reported as a permanent block rather than as progress.
+WARMUP_STALL_TICKS = 4
+
 
 class SignalEngine:
     def __init__(
@@ -83,6 +87,9 @@ class SignalEngine:
         self._stop = threading.Event()
         self._last_candle_ts: dict[str, pd.Timestamp] = {}
         self._last_signal_ts: dict[str, datetime] = {}
+        # asset -> (most candles ever seen, consecutive scans without growth)
+        self._warmup_seen: dict[str, tuple[int, int]] = {}
+        self._slow_cycle_reported = False
 
     # ------------------------------ lifecycle ------------------------------
     @property
@@ -117,7 +124,7 @@ class SignalEngine:
             try:
                 self._tick()
             except Exception as exc:  # never let one bad tick kill the engine
-                self.on_error(f"{exc}\n{traceback.format_exc()}")
+                self._report_error("engine", exc, traceback.format_exc())
             self._stop.wait(self.settings.poll_seconds)
         self.on_status("Engine stopped")
 
@@ -126,12 +133,72 @@ class SignalEngine:
         self.traces.add(t)
         self.on_trace(t)
 
+    def _report_error(self, asset: str, exc: BaseException, detail: str = "") -> None:
+        """Record a failure everywhere it can be read.
+
+        A one-line status bar cannot show a broker error that names sixty
+        assets, so the full text goes to Diagnostics (and from there to the
+        daily log file) while the status bar gets a summary. Losing the rest
+        of the message is how a fixable configuration problem turns into "it
+        just doesn't work".
+        """
+        text = str(exc) or exc.__class__.__name__
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        summary = lines[0] if lines else exc.__class__.__name__
+        rest = lines[1:]
+        if detail:
+            rest = rest + detail.splitlines()
+
+        self._trace(asset, "ERROR", summary, checks=rest)
+        self.on_error(f"{asset}: {text}" if asset != "engine" else text)
+
+    def _warmup_trace(self, asset: str, have: int, required: int) -> None:
+        """Report a warm-up shortfall, and say when it will never resolve.
+
+        "WARMING UP 145 candles, need 220" looks like progress. If the feed
+        only ever holds ~145 bars it is not progress -- it is a permanent
+        block that will suppress every signal forever, and it needs to read
+        that way rather than scrolling past once a minute.
+        """
+        best, stalls = self._warmup_seen.get(asset, (0, 0))
+        if have > best:
+            best, stalls = have, 0
+        else:
+            stalls += 1
+        self._warmup_seen[asset] = (best, stalls)
+
+        if stalls < WARMUP_STALL_TICKS:
+            self._trace(
+                asset, "WARMING UP",
+                f"{have} candles, need {required} for {self.settings.strategy}",
+                candles=have,
+            )
+            return
+
+        shortfall = required - have
+        self._trace(
+            asset, "BLOCKED",
+            f"stuck at ~{best} candles, {shortfall} short of the {required} "
+            f"'{self.settings.strategy}' needs — no signal can ever fire",
+            checks=[
+                "The feed is not returning more history, so waiting will not fix this.",
+                f"Lower the requirement: Settings -> Strategy -> Trend EMA period "
+                f"(needs period + 20 bars; {best} candles allows about {max(best - 20, 5)}).",
+                "Or pick a setup with a shorter warm-up: support_resistance needs "
+                "lookback + 40, reversal needs about 60.",
+            ],
+            candles=have,
+        )
+        # Report once per stall episode rather than every tick.
+        self._warmup_seen[asset] = (best, 0)
+
     def _feed_for(self, asset: str):
         if asset not in self._feeds:
             self._feeds[asset] = self.feed_factory(asset)
         return self._feeds[asset]
 
     def _tick(self) -> None:
+        started = time_mod.monotonic()
         now = datetime.now(timezone.utc)
 
         # 1. Settle anything that has reached expiry.
@@ -149,9 +216,38 @@ class SignalEngine:
             try:
                 self._scan_asset(asset, now)
             except Exception as exc:
-                self.on_error(f"{asset}: {exc}")
+                self._report_error(asset, exc)
 
         self.scheduler.prune()
+        self._check_cycle_time(time_mod.monotonic() - started)
+
+    def _check_cycle_time(self, elapsed: float) -> None:
+        """Warn when a full scan takes longer than a candle.
+
+        Assets are scanned one after another. If a pass over the watchlist
+        outlasts the timeframe, every pair is being looked at less often than
+        once per candle -- so most closes are never evaluated, and a
+        1-minute strategy silently becomes something else. Adding pairs feels
+        free, and this is where it stops being free.
+        """
+        budget = self.settings.timeframe_seconds
+        if elapsed <= budget or self._slow_cycle_reported:
+            return
+
+        self._slow_cycle_reported = True
+        count = max(len(self.settings.assets), 1)
+        self._trace(
+            "engine", "CONFIG WARNING",
+            f"a full scan of {count} pairs took {elapsed:.0f}s, longer than the "
+            f"{budget}s candle — each pair is only checked every {elapsed / 60:.1f} min",
+            checks=[
+                "Most candle closes are going unevaluated, so signals will be missed.",
+                f"At the measured {elapsed / count:.1f}s per pair, about "
+                f"{max(int(budget / (elapsed / count)), 1)} pairs fit inside one candle.",
+                "Trim the watchlist in Settings -> Pairs & Data to the pairs you "
+                "actually trade.",
+            ],
+        )
 
     # ------------------------------ scanning ------------------------------
     def _scan_asset(self, asset: str, now: datetime) -> None:
@@ -171,12 +267,9 @@ class SignalEngine:
         )
         have = 0 if df is None else len(df)
         if have < required:
-            self._trace(
-                asset, "WARMING UP",
-                f"{have} candles, need {required} for {self.settings.strategy}",
-                candles=have,
-            )
+            self._warmup_trace(asset, have, required)
             return
+        self._warmup_seen.pop(asset, None)
 
         latest_ts = df.index[-1]
         if self._last_candle_ts.get(asset) == latest_ts:

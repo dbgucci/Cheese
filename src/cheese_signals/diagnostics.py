@@ -41,6 +41,15 @@ class Trace:
     def fired(self) -> bool:
         return self.outcome == "FIRED"
 
+    @property
+    def is_problem(self) -> bool:
+        """Something the user needs to see regardless of the current filter.
+
+        Filtering to "signals only" must not be able to hide the reason there
+        are no signals -- that is the exact situation the filter gets used in.
+        """
+        return self.outcome in ("ERROR", "CONFIG WARNING")
+
     def as_text(self) -> str:
         head = f"{self.at:%H:%M:%S}  {self.asset:<12} {self.outcome:<10} {self.summary}"
         if not self.checks:
@@ -85,7 +94,7 @@ class TraceLog:
         if asset:
             items = [t for t in items if t.asset == asset]
         if only_fired:
-            items = [t for t in items if t.fired]
+            items = [t for t in items if t.fired or t.is_problem]
         return items[-limit:]
 
     def counts(self) -> dict[str, int]:
