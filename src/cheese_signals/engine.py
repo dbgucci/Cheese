@@ -533,6 +533,10 @@ class SignalEngine:
             "weighted_score": round(sig.score, 3),
             "invalidation_level": sig.meta.get("level"),
             "event_setup": bool(sig.meta.get("event")),
+            # Lets revalidate() explain a cancellation in the vocabulary of the
+            # trigger that actually fired.
+            "trigger": self.settings.trigger,
+            "setup": self.settings.strategy,
         }
 
         class _R:
@@ -596,13 +600,24 @@ class SignalEngine:
         self.on_status(f"Entered {sig.asset} {sig.side} @ {price:.5f}")
         self._maybe_place_order(sig)
 
+    def _stake(self) -> float:
+        """The stake a trade actually uses, after the safety cap.
+
+        One method, used by both the order path and the journal. They used to
+        compute this separately and only the order path applied the cap, so a
+        journal could record 1049.42 risked on a trade the safety gate had
+        limited to 50 -- making every P/L figure in History and Analytics
+        wrong by the ratio between them.
+        """
+        stake = round(self.settings.account_balance * self.settings.risk_per_trade, 2)
+        return min(stake, self.safety.config.max_stake)
+
     def _maybe_place_order(self, sig: PendingSignal) -> None:
         """Place a trade for a signal, if execution is enabled and safe."""
         if self.executor is None or self.trade_mode == execution.MODE_OFF:
             return
 
-        stake = round(self.settings.account_balance * self.settings.risk_per_trade, 2)
-        stake = min(stake, self.safety.config.max_stake)
+        stake = self._stake()
         balance = self.executor.balance()
 
         ok, why = self.safety.check(self.trade_mode, stake, balance)
@@ -667,7 +682,7 @@ class SignalEngine:
             self.scheduler.mark_settled(sig)
             return
 
-        stake = round(self.settings.account_balance * self.settings.risk_per_trade, 2)
+        stake = self._stake()
         result = outcome_mod.settle(
             sig, sig.entry_price, exit_price, stake=stake, payout=self.payout, settled_at=now
         )

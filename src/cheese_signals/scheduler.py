@@ -129,6 +129,27 @@ def schedule_signal(
     )
 
 
+# (reason a DOWN signal failed, reason an UP signal failed), per trigger.
+_INVALIDATION_WORDING = {
+    "bos": (
+        "the broken structure was reclaimed, so the break failed",
+        "the broken structure was reclaimed, so the break failed",
+    ),
+    "fractal": (
+        "the swing point was taken out, so the pullback did not hold",
+        "the swing point was taken out, so the pullback did not hold",
+    ),
+    "momentum": (
+        "the momentum candle was fully retraced",
+        "the momentum candle was fully retraced",
+    ),
+    "": (        # liquidity_sweep and anything that does not name a trigger
+        "a genuine breakout, not a sweep",
+        "a genuine breakdown, not a sweep",
+    ),
+}
+
+
 def revalidate(
     pending: PendingSignal,
     current_direction: int,
@@ -168,15 +189,23 @@ def revalidate(
 
     level = (pending.features or {}).get("invalidation_level")
     if level and latest_close is not None:
+        # The rule is the same for every setup -- price closing back through
+        # the level that defined the signal means the premise failed -- but
+        # the *wording* must match the setup that fired. A break-of-structure
+        # signal cancelled with "not a sweep" reads like the wrong strategy
+        # ran, which is exactly how a correct decision loses the user's trust.
+        why = _INVALIDATION_WORDING.get(
+            (pending.features or {}).get("trigger", ""), _INVALIDATION_WORDING[""]
+        )
         if pending.direction == DOWN and latest_close > level:
             return (
-                f"setup invalidated: price closed above the swept level "
-                f"({latest_close:.5f} > {level:.5f}) -- a genuine breakout, not a sweep"
+                f"setup invalidated: price closed back above {level:.5f} "
+                f"(close {latest_close:.5f}) -- {why[0]}"
             )
         if pending.direction == UP and latest_close < level:
             return (
-                f"setup invalidated: price closed below the swept level "
-                f"({latest_close:.5f} < {level:.5f}) -- a genuine breakdown, not a sweep"
+                f"setup invalidated: price closed back below {level:.5f} "
+                f"(close {latest_close:.5f}) -- {why[1]}"
             )
 
     is_event = bool((pending.features or {}).get("event_setup"))

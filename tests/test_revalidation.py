@@ -37,17 +37,24 @@ def test_event_setup_survives_no_redetection_over_several_candles():
         assert revalidate(sig, FLAT, 0.0, min_score=0.6, latest_close=close) is None
 
 
-def test_sell_setup_cancels_when_price_closes_above_swept_level():
-    """A close beyond the level means it genuinely broke -- the opposite trade."""
+def test_sell_setup_cancels_when_price_closes_above_the_level():
+    """A close beyond the level means it genuinely broke -- the opposite trade.
+
+    Asserts the decision and the numbers, not the phrasing: the wording is
+    now chosen per trigger (see test_stake_and_wording.py) and pinning the
+    exact sentence here would break every time it is reworded.
+    """
     sig = _pending(direction=DOWN, level=1.1050)
     reason = revalidate(sig, FLAT, 0.0, min_score=0.6, latest_close=1.1061)
-    assert reason and "closed above the swept level" in reason
+    assert reason and "invalidated" in reason
+    assert "1.10500" in reason and "1.10610" in reason
 
 
-def test_buy_setup_cancels_when_price_closes_below_swept_level():
+def test_buy_setup_cancels_when_price_closes_below_the_level():
     sig = _pending(direction=UP, level=1.1000)
     reason = revalidate(sig, FLAT, 0.0, min_score=0.6, latest_close=1.0988)
-    assert reason and "closed below the swept level" in reason
+    assert reason and "invalidated" in reason
+    assert "1.10000" in reason and "1.09880" in reason
 
 
 def test_opposing_signal_still_cancels():
