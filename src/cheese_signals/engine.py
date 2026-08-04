@@ -94,6 +94,8 @@ class SignalEngine:
         self._stop = threading.Event()
         self._last_candle_ts: dict[str, pd.Timestamp] = {}
         self._last_signal_ts: dict[str, datetime] = {}
+        # asset -> (won, when it settled), for the win/loss cooldowns
+        self._last_outcome: dict[str, tuple[bool, datetime]] = {}
         # asset -> (most candles seen, when that high-water mark was set)
         self._warmup_seen: dict[str, tuple[int, datetime]] = {}
         # asset -> (first seen warming up, candle count then) for the ETA
@@ -218,6 +220,44 @@ class SignalEngine:
             return None      # too short a window to extrapolate from
         gained = have - first[1]
         return gained / elapsed if gained > 0 else None
+
+    def _cooldown_remaining(self, asset: str, now: datetime) -> Optional[tuple[float, str]]:
+        """Seconds this pair is still held back, and which rule is holding it.
+
+        Three rules, longest wins:
+
+        * a base cooldown after *any* signal, which is what stops two trades
+          on one pair overlapping;
+        * a longer one after a win, and
+        * one after a loss.
+
+        The win and loss cooldowns exist so a single pair cannot dominate the
+        book. They are concentration control, not an edge -- see the defaults
+        in ``settings.py`` for what the measured data does and does not
+        support.
+        """
+        rules: list[tuple[float, str]] = []
+
+        last = self._last_signal_ts.get(asset)
+        if last is not None:
+            rules.append((self.settings.cooldown_minutes * 60, "cooldown active", last))
+
+        settled = self._last_outcome.get(asset)
+        if settled is not None:
+            won, when = settled
+            minutes = (self.settings.win_cooldown_minutes if won
+                       else self.settings.loss_cooldown_minutes)
+            label = "resting this pair after a win" if won else "resting this pair after a loss"
+            rules.append((minutes * 60, label, when))
+
+        best: Optional[tuple[float, str]] = None
+        for window, label, since in rules:
+            if window <= 0:
+                continue
+            remaining = window - (now - since).total_seconds()
+            if remaining > 0 and (best is None or remaining > best[0]):
+                best = (remaining, label)
+        return best
 
     def _history_for(self, asset: str, live) -> Optional[pd.DataFrame]:
         """Live candles extended backwards with what the journal already holds.
@@ -381,11 +421,11 @@ class SignalEngine:
                         checks, len(df), result.score, result.direction)
             return
 
-        last = self._last_signal_ts.get(asset)
-        if last and (now - last).total_seconds() < self.settings.cooldown_minutes * 60:
-            wait = self.settings.cooldown_minutes * 60 - (now - last).total_seconds()
+        held = self._cooldown_remaining(asset, now)
+        if held:
+            wait, why = held
             self._trace(asset, "SUPPRESSED",
-                        f"cooldown active, {wait:.0f}s remaining",
+                        f"{why}, {wait:.0f}s remaining",
                         checks, len(df), result.score, result.direction)
             return
 
@@ -705,6 +745,7 @@ class SignalEngine:
             sig, sig.entry_price, exit_price, stake=stake, payout=self.payout, settled_at=now
         )
         self.scheduler.mark_settled(sig)
+        self._last_outcome[sig.asset] = (bool(result.won), now)
 
         if sig.db_id is not None:
             self.journal.record_outcome(

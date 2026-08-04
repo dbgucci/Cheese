@@ -214,7 +214,27 @@ class SettingsPage(QWidget):
         self.adx_max = _row(grid, 1, "ADX at most", _spin(0, 100, s.adx_max, 1, "", 1),
                             "100 disables the ceiling.")
         self.min_score = _row(grid, 2, "Minimum confidence", _spin(0.0, 1.0, s.min_score, 0.05, "", 2))
-        self.cooldown = _row(grid, 3, "Cooldown per pair", _spin(0, 120, s.cooldown_minutes, 1, " min"))
+        lay.addWidget(box)
+
+        box, grid = _group("Pair cooldowns")
+        self.cooldown = _row(
+            grid, 0, "After any signal", _spin(0, 120, s.cooldown_minutes, 1, " min"),
+            "Minimum gap between two signals on the same pair. This is what stops "
+            "two trades on one pair running at once.")
+        self.win_cooldown = _row(
+            grid, 1, "Extra rest after a win", _spin(0, 120, s.win_cooldown_minutes, 1, " min"),
+            "Keeps one pair from dominating the book after it fires. On 190 live "
+            "trades a pair won 50.5% on its next trade after a win, versus 58.8% "
+            "after a loss -- weak, and it reversed between halves, so treat this as "
+            "concentration control rather than a prediction.")
+        self.loss_cooldown = _row(
+            grid, 2, "Extra rest after a loss", _spin(0, 120, s.loss_cooldown_minutes, 1, " min"),
+            "Defaults to 0 on purpose: the measured data says a pair does BETTER on "
+            "its next trade after a loss (58.8%), so resting it skips the better "
+            "trades. Raise it only if you want the risk control regardless.")
+        _group_hint(grid, 3,
+                    "The longest applicable cooldown wins. Every block is written to "
+                    "Diagnostics with the rule that caused it and the time remaining.")
         lay.addWidget(box)
         lay.addStretch(1)
         return self._scroll(page)
@@ -432,6 +452,9 @@ class SettingsPage(QWidget):
         s.risk_per_trade = self.risk_pct.value() / 100.0
         s.max_stake = self.max_stake.value()
         s.min_balance = self.min_balance.value()
+        s.cooldown_minutes = self.cooldown.value()
+        s.win_cooldown_minutes = self.win_cooldown.value()
+        s.loss_cooldown_minutes = self.loss_cooldown.value()
         s.restrict_to_sessions = self.restrict_sessions.isChecked()
         s.allowed_sessions = [x.strip() for x in self.sessions_edit.text().split(",") if x.strip()]
         s.assets = parse_assets(self.assets_edit.toPlainText())[0]
@@ -545,6 +568,8 @@ class SettingsPage(QWidget):
             adx_max=self.adx_max.value(),
             min_score=self.min_score.value(),
             cooldown_minutes=self.cooldown.value(),
+            win_cooldown_minutes=self.win_cooldown.value(),
+            loss_cooldown_minutes=self.loss_cooldown.value(),
             lead_minutes=self.lead.value(),
             timeframe_seconds=self.timeframe.value(),
             adaptive_expiry=self.adaptive.isChecked(),

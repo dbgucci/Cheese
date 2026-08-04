@@ -132,7 +132,26 @@ class Settings:
     require_liquidity_sweep: bool = False
     use_higher_timeframe_bias: bool = True
     bias_multiple: int = 5
+    # Minimum gap between two signals on the same pair, whatever happened.
+    # This is what stops two trades on one pair overlapping; measured on 190
+    # live trades it already prevented same-pair overlap entirely (0 of 190).
     cooldown_minutes: int = 3
+
+    # Extra rest for a pair after a settled trade, on top of the base cooldown.
+    # These are concentration controls, not an edge. What 190 live trades
+    # actually showed about the pair's *next* trade:
+    #
+    #   after a win   50.5% (n=99)   <- slightly worse
+    #   after a loss  58.8% (n=85)   <- slightly better
+    #
+    # Fisher p=0.30, and the after-a-win effect reverses between halves
+    # (39.5% then 58.9%), so neither is trustworthy as a prediction. The win
+    # default is 5 because it is the direction the (weak) evidence points and
+    # it costs ~14% of trades; the loss default is 0 because the evidence
+    # points the *other* way -- resting a pair after a loss would skip its
+    # better trades. Raise it only if you want the risk control regardless.
+    win_cooldown_minutes: int = 5
+    loss_cooldown_minutes: int = 0
 
     # --- session handling (OTC: measured, not assumed -- see sessions.py) ---
     restrict_to_sessions: bool = False
@@ -297,6 +316,24 @@ class Settings:
             out.append(
                 f"Balance {self.account_balance:.2f} is at or below the "
                 f"{self.min_balance:.2f} floor — no trade will ever be placed."
+            )
+        longest = max(self.cooldown_minutes,
+                      self.win_cooldown_minutes, self.loss_cooldown_minutes)
+        if longest and len(self.assets) * 1.0 and longest >= 30:
+            out.append(
+                f"The longest pair cooldown is {longest} minutes. With "
+                f"{len(self.assets)} pairs that caps you at roughly "
+                f"{len(self.assets) * 60 // longest} signals an hour."
+            )
+        if self.win_cooldown_minutes and self.win_cooldown_minutes <= self.cooldown_minutes:
+            out.append(
+                f"'Extra rest after a win' ({self.win_cooldown_minutes} min) is not longer "
+                f"than the base cooldown ({self.cooldown_minutes} min), so it never applies."
+            )
+        if self.loss_cooldown_minutes and self.loss_cooldown_minutes <= self.cooldown_minutes:
+            out.append(
+                f"'Extra rest after a loss' ({self.loss_cooldown_minutes} min) is not longer "
+                f"than the base cooldown ({self.cooldown_minutes} min), so it never applies."
             )
         if self.restrict_to_sessions and not self.allowed_sessions:
             out.append("Session restriction is on but no sessions are selected — nothing can trade.")
