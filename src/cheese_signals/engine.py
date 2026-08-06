@@ -11,7 +11,7 @@ import copy
 import threading
 import time as time_mod
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import pandas as pd
@@ -231,6 +231,71 @@ class SignalEngine:
             return None      # too short a window to extrapolate from
         gained = have - first[1]
         return gained / elapsed if gained > 0 else None
+
+    def _martingale_step(self, sig: PendingSignal) -> int:
+        return int((sig.features or {}).get("martingale_step", 0))
+
+    def _schedule_recovery(
+        self, sig: PendingSignal, result, now: datetime
+    ) -> Optional[PendingSignal]:
+        """After a loss, re-enter the same trade on the very next candle.
+
+        Returns the recovery signal, or None if the sequence is finished --
+        which is also the caller's signal for whether to announce the result.
+        A loss mid-sequence is not an outcome the user should be told about
+        yet; only the final trade closes the book.
+
+        Entry is the next candle open, which is exactly this trade's expiry,
+        so there is no gap and no re-validation: this is a recovery of a
+        decision already made, not a fresh setup.
+        """
+        if result.won or not self.settings.martingale_enabled:
+            return None
+
+        step = self._martingale_step(sig) + 1
+        if step > max(self.settings.martingale_reentries, 0):
+            return None
+
+        entry_at = sig.expiry_at
+        expiry_at = entry_at + timedelta(minutes=max(self.settings.expiry_minutes, 1))
+        if expiry_at <= now:
+            self._trace(sig.asset, "MARTINGALE SKIPPED",
+                        f"the recovery candle at {entry_at:%H:%M:%S} has already passed")
+            return None
+
+        features = dict(sig.features or {})
+        features.update({
+            "martingale_step": step,
+            "martingale_root": features.get("martingale_root", sig.db_id),
+            "martingale_stake_multiple": 2 ** step,
+        })
+
+        recovery = PendingSignal(
+            asset=sig.asset,
+            direction=sig.direction,
+            score=sig.score,
+            strategy=sig.strategy,
+            reason=f"martingale recovery (step {step}) after a loss on {sig.asset}",
+            detected_at=now,
+            entry_at=entry_at,
+            expiry_at=expiry_at,
+            session=sig.session,
+            features=features,
+        )
+        recovery.db_id = self.journal.record_signal(
+            asset=recovery.asset, direction=recovery.direction, score=recovery.score,
+            strategy=recovery.strategy, reason=recovery.reason,
+            detected_at=recovery.detected_at, entry_at=recovery.entry_at,
+            expiry_at=recovery.expiry_at, session=recovery.session,
+            utc_hour=recovery.entry_at.hour, features=features,
+        )
+        self.scheduler.add(recovery)
+        self._trace(
+            sig.asset, "MARTINGALE",
+            f"loss re-entered at {entry_at:%H:%M:%S} for {expiry_at - entry_at} "
+            f"at {2 ** step}x stake (step {step}) — result held until it closes",
+        )
+        return recovery
 
     def _cooldown_remaining(self, asset: str, now: datetime) -> Optional[tuple[float, str]]:
         """Seconds this pair is still held back, and which rule is holding it.
@@ -660,7 +725,7 @@ class SignalEngine:
         self.on_status(f"Entered {sig.asset} {sig.side} @ {price:.5f}")
         self._maybe_place_order(sig)
 
-    def _stake(self) -> float:
+    def _stake(self, sig: Optional[PendingSignal] = None) -> float:
         """The stake a trade actually uses, after the safety cap.
 
         One method, used by both the order path and the journal. They used to
@@ -670,14 +735,18 @@ class SignalEngine:
         wrong by the ratio between them.
         """
         stake = round(self.settings.account_balance * self.settings.risk_per_trade, 2)
-        return min(stake, self.safety.config.max_stake)
+        stake = min(stake, self.safety.config.max_stake)
+        # A martingale recovery doubles per step. The safety cap still binds,
+        # so an over-large ladder is truncated rather than allowed through.
+        multiple = 1 if sig is None else int((sig.features or {}).get("martingale_stake_multiple", 1))
+        return min(stake * multiple, self.safety.config.max_stake)
 
     def _maybe_place_order(self, sig: PendingSignal) -> None:
         """Place a trade for a signal, if execution is enabled and safe."""
         if self.executor is None or self.trade_mode == execution.MODE_OFF:
             return
 
-        stake = self._stake()
+        stake = self._stake(sig)
         balance = self.executor.balance()
 
         ok, why = self.safety.check(self.trade_mode, stake, balance)
@@ -751,7 +820,7 @@ class SignalEngine:
             self.scheduler.mark_settled(sig)
             return
 
-        stake = self._stake()
+        stake = self._stake(sig)
         result = outcome_mod.settle(
             sig, sig.entry_price, exit_price, stake=stake, payout=self.payout, settled_at=now
         )
@@ -772,7 +841,12 @@ class SignalEngine:
                 reason=result.reason,
             )
 
-        if self.notifier:
+        # A loss that is about to be re-entered is not a result yet -- the
+        # sequence is still open, so nothing is sent until it closes. Only a
+        # win, or a loss with no recovery left, is final.
+        recovery = self._schedule_recovery(sig, result, now)
+
+        if self.notifier and recovery is None:
             ok, err = self.notifier.send_result(result)
             if not ok:
                 # A result that never arrives looks like a bot that stopped

@@ -101,7 +101,14 @@ class TelegramNotifier:
         instead of the user simply never receiving a result.
         """
         sig = outcome.signal
-        icon = "✅ *WIN*" if outcome.won else "❌ *LOSS*"
+        # A recovery win is a different thing from a first-entry win: it took
+        # two stakes to get one payout, so netting is smaller. Labelling them
+        # the same would make the Telegram feed read better than the account.
+        step = int((getattr(sig, "features", None) or {}).get("martingale_step", 0))
+        if outcome.won:
+            icon = "✅ *WIN* \\(recovery\\)" if step else "✅ *WIN*"
+        else:
+            icon = "❌ *LOSS* \\(after recovery\\)" if step else "❌ *LOSS*"
         entry = sig.entry_at.astimezone(timezone.utc)
         expiry = sig.expiry_at.astimezone(timezone.utc)
         minutes = max(int(round((expiry - entry).total_seconds() / 60)), 1)
@@ -113,8 +120,9 @@ class TelegramNotifier:
             f"{entry:%H:%M:%S} → {expiry:%H:%M:%S} UTC ({minutes} min)\n"
             f"Entry {outcome.entry_price:.5f} → Exit {outcome.exit_price:.5f} "
             f"({outcome.move_pips:+.1f} pips)\n"
-            f"P/L: *{outcome.pnl:+.2f}*\n"
-            f"_{_esc(outcome.reason)}_"
+            f"P/L: *{outcome.pnl:+.2f}*"
+            + (f"   _\\(martingale step {step}, {2 ** step}x stake\\)_" if step else "")
+            + f"\n_{_esc(outcome.reason)}_"
         )
         return self.send_verbose(text)
 

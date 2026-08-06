@@ -153,6 +153,32 @@ class Settings:
     win_cooldown_minutes: int = 5
     loss_cooldown_minutes: int = 0
 
+    # --- martingale (single-step recovery) ---
+    # After a losing trade, immediately re-enter the same pair and direction on
+    # the next candle at double the stake. Off by default.
+    #
+    # This does NOT change the edge. Expected value per unit staked is
+    # identical to flat staking at every win rate -- measured, not asserted:
+    # -0.0787 either way at a 49.8% win rate, +0.0255 either way at 55.4%.
+    # What it changes is the shape: more sequences finish positive (80% at a
+    # 55.4% win rate), and the losing ones lose three stakes instead of one.
+    #
+    # That makes it a bankroll question, and the answer depends entirely on
+    # whether the underlying win rate clears break-even. Simulated over 500
+    # sequences from a 500 bankroll at a 10 stake:
+    #
+    #   win rate 49.8%   flat: median 106, busts 39%   |  x1: median 0, busts 88%
+    #   win rate 55.4%   flat: median 624, busts  0.4% |  x1: median 757, busts 6%
+    #
+    # So it roughly doubles the money at a winning rate and roughly guarantees
+    # ruin at a losing one. `conflicts()` says so when the two settings
+    # disagree.
+    martingale_enabled: bool = False
+    # Re-entries after a loss. 1 means one recovery trade, risking 3 stakes in
+    # the worst case. Capped at 3 deliberately: a 5-deep ladder risks 630 on a
+    # 10 stake, which no bankroll here survives.
+    martingale_reentries: int = 1
+
     # --- session handling (OTC: measured, not assumed -- see sessions.py) ---
     restrict_to_sessions: bool = False
     allowed_sessions: list[str] = field(default_factory=list)
@@ -335,6 +361,36 @@ class Settings:
                 f"'Extra rest after a loss' ({self.loss_cooldown_minutes} min) is not longer "
                 f"than the base cooldown ({self.cooldown_minutes} min), so it never applies."
             )
+        if self.martingale_enabled:
+            worst = sum(2 ** k for k in range(self.martingale_reentries + 1))
+            base = round(self.account_balance * self.risk_per_trade, 2)
+            risked = min(base, self.max_stake) * worst
+            out.append(
+                f"Martingale is on: a losing sequence risks {worst}x the stake "
+                f"(about {risked:.0f}) to win one payout. It does not change the edge — "
+                f"expected value per unit staked is identical to flat staking."
+            )
+            if self.martingale_reentries >= 3:
+                out.append(
+                    f"{self.martingale_reentries} re-entries means a bad sequence risks "
+                    f"{worst}x the stake. Simulated on this app's own results, ladders "
+                    f"beyond one re-entry busted the account most of the time."
+                )
+            if self.adx_max >= 100 and self.adx_min <= 0:
+                out.append(
+                    "Martingale is on with no ADX filter. On 815 logged trades the "
+                    "unfiltered win rate was 51.4% (below the 54.1% break-even) and "
+                    "ADX<25 was 55.4%. Martingale roughly doubles the money at a "
+                    "winning rate and roughly guarantees ruin at a losing one, so "
+                    "this pairing is the worst of the two."
+                )
+            if self.adaptive_expiry:
+                out.append(
+                    "Martingale re-enters on the next candle for the fixed expiry, so "
+                    "adaptive expiry does not apply to the recovery trade — the "
+                    "recovery always runs for "
+                    f"{self.expiry_minutes} minute(s)."
+                )
         if self.restrict_to_sessions and not self.allowed_sessions:
             out.append("Session restriction is on but no sessions are selected — nothing can trade.")
         if self.min_score > 0.95:

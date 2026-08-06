@@ -236,6 +236,25 @@ class SettingsPage(QWidget):
                     "The longest applicable cooldown wins. Every block is written to "
                     "Diagnostics with the rule that caused it and the time remaining.")
         lay.addWidget(box)
+
+        box, grid = _group("Martingale recovery")
+        self.martingale = QCheckBox("Re-enter a losing trade on the next candle")
+        self.martingale.setChecked(s.martingale_enabled)
+        self.martingale.setToolTip(
+            "Doubles the stake and re-enters the same pair and direction. The result "
+            "message is held until the sequence closes, so a loss that is about to be "
+            "recovered is not announced.")
+        grid.addWidget(self.martingale, 0, 0, 1, 2)
+        self.mg_reentries = _row(
+            grid, 1, "Re-entries after a loss", _spin(1, 3, s.martingale_reentries),
+            "1 risks 3x the stake in the worst case; 2 risks 7x; 3 risks 15x.")
+        _group_hint(grid, 2,
+                    "This does not change the edge — expected value per unit staked is "
+                    "identical to flat staking. It trades many small wins for rare "
+                    "large losses, which only pays off if the win rate already clears "
+                    "break-even. Check the Analytics benchmark line first.")
+        lay.addWidget(box)
+
         lay.addStretch(1)
         return self._scroll(page)
 
@@ -397,7 +416,8 @@ class SettingsPage(QWidget):
     def _wire_live_updates(self):
         for w in (self.strategy, self.trigger, self.source, self.trade_mode):
             w.currentTextChanged.connect(lambda _=None: self.refresh_enablement())
-        for w in (self.adaptive, self.restrict_sessions, self.tg_enabled, self.require_ha, self.use_bias):
+        for w in (self.adaptive, self.restrict_sessions, self.tg_enabled, self.require_ha,
+                  self.use_bias, self.martingale):
             w.stateChanged.connect(lambda _=None: self.refresh_enablement())
         for w in (self.adx_min, self.adx_max, self.lead, self.expiry_fixed,
                   self.expiry_min, self.expiry_max, self.fractal_age, self.min_score,
@@ -453,6 +473,8 @@ class SettingsPage(QWidget):
         s.max_stake = self.max_stake.value()
         s.min_balance = self.min_balance.value()
         s.cooldown_minutes = self.cooldown.value()
+        s.martingale_enabled = self.martingale.isChecked()
+        s.martingale_reentries = self.mg_reentries.value()
         s.win_cooldown_minutes = self.win_cooldown.value()
         s.loss_cooldown_minutes = self.loss_cooldown.value()
         s.restrict_to_sessions = self.restrict_sessions.isChecked()
@@ -568,6 +590,8 @@ class SettingsPage(QWidget):
             adx_max=self.adx_max.value(),
             min_score=self.min_score.value(),
             cooldown_minutes=self.cooldown.value(),
+            martingale_enabled=self.martingale.isChecked(),
+            martingale_reentries=self.mg_reentries.value(),
             win_cooldown_minutes=self.win_cooldown.value(),
             loss_cooldown_minutes=self.loss_cooldown.value(),
             lead_minutes=self.lead.value(),
