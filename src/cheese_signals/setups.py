@@ -238,12 +238,25 @@ def evaluate(
 
 
 def _score(df: pd.DataFrame, bias: int, cfg: SetupConfig) -> float:
-    """Confidence in 0..1.
+    """Confidence in 0..1. **Not a validated filter -- do not gate on it.**
 
-    Kept deliberately simple. The previous formula was anti-calibrated on real
-    results -- higher scores predicted *worse* outcomes -- so this leans on
-    fewer, more defensible inputs and should itself be checked against the
-    Analytics confidence buckets before being trusted as a filter.
+    ADX used to be an input here, added for trend setups on the reasoning that
+    a stronger trend is a better continuation. Measured over 815 live trades
+    it is the opposite: ADX rank-correlates -0.08 with winning, and splitting
+    at 25 gives 55.4% below versus 44.1% above (Fisher p=0.002). Adding it
+    made the score anti-calibrated, which is exactly what three successive
+    journals showed -- the lowest-confidence bucket kept winning most.
+
+    ADX is a *regime filter*, not a confidence input, and it already has one:
+    ``adx_min``/``adx_max`` in Settings. So it is gone from here rather than
+    inverted, because inverting it would be fitting a sign to two days of
+    data.
+
+    That leaves candle body, which measured +/-0.00 against outcome -- no
+    demonstrated information either. The score is kept because it is recorded
+    per signal and the Analytics buckets are how it will eventually be
+    validated or replaced, but nothing should be filtered on it until those
+    buckets show a monotonic gradient.
     """
     high, low, close = df["high"], df["low"], df["close"]
     atr_now = float(ind.atr(high, low, close).iloc[-1])
@@ -252,13 +265,5 @@ def _score(df: pd.DataFrame, bias: int, cfg: SetupConfig) -> float:
 
     o = float(df["open"].iloc[-1]); c = float(close.iloc[-1])
     body = abs(c - o) / atr_now
-    adx_now = float(ind.adx(high, low, close).iloc[-1])
-    adx_component = 0.0 if adx_now != adx_now else min(adx_now / 40.0, 1.0)
-
-    if cfg.kind == SETUP_TREND:
-        s = 0.55 + 0.20 * min(body, 1.5) / 1.5 + 0.15 * adx_component
-    elif cfg.kind == SETUP_SR:
-        s = 0.55 + 0.25 * min(body, 1.5) / 1.5 - 0.10 * adx_component
-    else:
-        s = 0.55 + 0.20 * min(body, 1.5) / 1.5 - 0.15 * adx_component
-    return float(min(max(s, 0.0), 1.0))
+    weight = 0.25 if cfg.kind == SETUP_SR else 0.20
+    return float(min(max(0.55 + weight * min(body, 1.5) / 1.5, 0.0), 1.0))

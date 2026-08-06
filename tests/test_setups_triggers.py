@@ -317,3 +317,43 @@ def test_lab_combos_follow_saved_settings():
     assert strict.trades < loose.trades, (
         f"saved settings were ignored: {strict.trades} vs {loose.trades} trades"
     )
+
+
+# --------------------------- the confidence score ---------------------------
+def test_the_score_does_not_use_adx(tmp_path):
+    """ADX is a regime filter, not a confidence input.
+
+    Adding it made the score anti-calibrated: over 815 live trades ADX
+    rank-correlated -0.08 with winning, so a formula that rewarded it
+    produced its best results in the *lowest* confidence bucket, in three
+    successive journals. It has its own setting (adx_min/adx_max); it does
+    not belong in the score as well.
+    """
+    import inspect
+
+    source = inspect.getsource(setups._score)
+    body = source.split('"""')[2]        # skip the docstring
+    assert "adx" not in body.lower(), "ADX is back in the score calculation"
+
+
+def test_the_score_is_documented_as_unvalidated():
+    """A number that looks like a probability invites being filtered on."""
+    assert "do not gate on it" in (setups._score.__doc__ or "").lower()
+
+
+def test_scores_still_vary_with_the_candle(tmp_path):
+    """Removing ADX must not flatten the score to a constant."""
+    seen = set()
+    df = _trend_frame(400)
+    cfg = setups.SetupConfig()
+    for i in range(cfg.min_bars(), len(df), 7):
+        seen.add(round(setups._score(df.iloc[: i + 1], UP, cfg), 3))
+    assert len(seen) > 5, f"score collapsed to {seen}"
+
+
+def test_scores_stay_inside_zero_and_one():
+    df = _volatile_frame(300) if "_volatile_frame" in dir() else _trend_frame(300)
+    cfg = setups.SetupConfig()
+    for i in range(cfg.min_bars(), len(df), 5):
+        s = setups._score(df.iloc[: i + 1], UP, cfg)
+        assert 0.0 <= s <= 1.0
