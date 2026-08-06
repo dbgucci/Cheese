@@ -31,6 +31,11 @@ Callback = Callable[..., None]
 # whatever price is available.
 SETTLEMENT_GRACE_SECONDS = 90.0
 
+# The same wait on the entry side, but shorter: an entry that drifts most of a
+# candle late is no longer the trade that was signalled, so past this the
+# engine enters on the best price available and marks it approximate.
+ENTRY_GRACE_SECONDS = 25.0
+
 # How long an asset may go without gaining a candle before the shortfall is
 # reported as a stall rather than as progress. Measured in seconds, not in
 # scans: the loop revisits an asset far more often than candles arrive.
@@ -713,12 +718,33 @@ class SignalEngine:
         return self._price_at(asset, datetime.now(timezone.utc))
 
     def _enter(self, sig: PendingSignal, now: datetime) -> None:
+        # Wait for the bar that closes *at* the entry minute, exactly as
+        # settlement waits for the one closing at expiry. Without this the
+        # lookup silently falls through to the previous bar whenever the feed
+        # has not delivered yet, and the trade is recorded as entered at a
+        # price from a minute earlier. Audited against stored candles that hit
+        # 6.5% of entries and flipped the verdict on 13 of 855 trades.
+        waited = (now - sig.entry_at).total_seconds()
+        approximate = False
+        if not self._has_candle_closing_at(sig.asset, sig.entry_at):
+            if waited < ENTRY_GRACE_SECONDS:
+                return  # try again on the next tick, a few seconds from now
+            approximate = True
+            self._trace(sig.asset, "ENTRY PRICE APPROXIMATE",
+                        f"the bar closing at {sig.entry_at:%H:%M:%S} never arrived after "
+                        f"{ENTRY_GRACE_SECONDS:.0f}s; pricing from the latest available bar")
+
         price = self._price_at(sig.asset, sig.entry_at)
         if price is None:
             self.scheduler.cancel(sig, "no price available at entry time")
             if sig.db_id is not None:
                 self.journal.set_signal_status(sig.db_id, "cancelled", "no price at entry")
             return
+        if approximate:
+            # Flag it on the record so an audit can exclude these rather than
+            # treating a stale price as a real fill.
+            sig.features = dict(sig.features or {})
+            sig.features["entry_price_approximate"] = True
         self.scheduler.mark_active(sig, price)
         if sig.db_id is not None:
             self.journal.set_signal_status(sig.db_id, ACTIVE)
