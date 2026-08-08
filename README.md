@@ -157,9 +157,26 @@ move you no longer capture.
 | `trend_continuation` | with the trend, on a pullback resolving | EMA period, Keltner EMA/ATR/multiplier, require HA alignment |
 | `support_resistance` | rejections away from a rolling level | lookback, touch tolerance (ATR), rejection wick % |
 | `reversal` | exhaustion against the current move | RSI period/levels, Bollinger period/σ |
+| `impulse_continuation` | with the trend, but only while the Keltner mid is actually travelling | trend parameters above, plus slope bars and minimum slope in ATR |
 
-All three also share an **ADX band** (min/max), so any setup can be
+All of them also share an **ADX band** (min/max), so any setup can be
 restricted to the trend strength it works in.
+
+### Presets
+
+`Settings → Load Preset…` applies a complete, named rule set in one go —
+including the filters the rule set does *not* use. That matters: loading a
+strategy while leaving the confidence gate or the higher-timeframe bias
+switched on quietly produces a different strategy from the one being tested.
+
+`USDCAD OTC Impulse Continuation V1 (observation)` is a rule set specified
+elsewhere and reimplemented here from its published description, so it can be
+forward-tested on a second, independent feed. Measured on 45 hours of stored
+USDCAD OTC candles it read 62.8% over 94 signals, against a 52.2% break-even
+at a 91.5% payout and 53.2% drift on the same windows; the same rules read
+51.8% over 519 signals on five other pairs. That is promising and unproven,
+so the preset ships with execution off and the app warns if you edit a rule
+while a forward test is running.
 
 **Triggers** (`triggers.py`) — slowest to fastest:
 
@@ -385,7 +402,7 @@ balance per trade) on purpose.
 ```
 src/cheese_signals/
   indicators.py       technical indicators
-  setups.py           trend_continuation / support_resistance / reversal
+  setups.py           trend_continuation / support_resistance / reversal / impulse_continuation
   triggers.py         fractal / bos / momentum entry triggers
   strategies.py       the older standalone strategies (still lab-comparable)
   confluence.py       regime-aware combination of the older three

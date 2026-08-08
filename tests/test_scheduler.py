@@ -31,11 +31,25 @@ def test_schedule_gives_requested_lead_time():
     assert sig.lead_seconds >= 120
 
 
-def test_zero_lead_enters_next_candle():
+def test_zero_lead_enters_at_the_close_that_produced_the_signal():
+    """Detected 14:31:17 -> the signal bar closed at 14:31, so entry is 14:31.
+
+    Scheduling this to 14:32 instead would skip the candle the rules were
+    read on and trade the one after it, which is a different strategy.
+    """
     sig = schedule_signal(
         "EURUSD_otc", UP, 0.8, "s", "r", _now(), "overlap", lead_minutes=0, expiry_minutes=1
     )
-    assert sig.entry_at == datetime(2026, 8, 1, 14, 32, 0, tzinfo=timezone.utc)
+    assert sig.entry_at == datetime(2026, 8, 1, 14, 31, 0, tzinfo=timezone.utc)
+    assert sig.expiry_at == datetime(2026, 8, 1, 14, 32, 0, tzinfo=timezone.utc)
+    assert sig.lead_seconds == 0
+
+
+def test_a_positive_lead_is_unchanged_by_the_zero_lead_rule():
+    for lead, minute in ((1, 33), (2, 34), (3, 35)):
+        sig = schedule_signal("EURUSD_otc", UP, 0.8, "s", "r", _now(), "overlap",
+                              lead_minutes=lead, expiry_minutes=1)
+        assert sig.entry_at == datetime(2026, 8, 1, 14, minute, 0, tzinfo=timezone.utc), lead
 
 
 def test_revalidate_cancels_on_direction_flip():

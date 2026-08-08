@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import asdict, dataclass, field, fields
@@ -36,6 +37,61 @@ _ASSET_PATTERN = re.compile(r"^[A-Za-z0-9]{3,12}(_otc)?$", re.IGNORECASE)
 
 # Everything from a '#' to end of line. People annotate watchlists.
 _COMMENT = re.compile(r"#[^\n]*")
+
+
+PRESET_IMPULSE_USDCAD = "USDCAD OTC Impulse Continuation V1 (observation)"
+
+# Named, complete configurations. A preset exists so that a rule set under
+# test can be reproduced exactly rather than approximately -- every field it
+# names is overwritten, including the ones it wants *off*.
+PRESETS: dict[str, dict[str, Any]] = {
+    PRESET_IMPULSE_USDCAD: {
+        "note": (
+            "Independently specified rule set, reimplemented from its published "
+            "description. On 94 signals over 45 hours of stored USDCAD OTC candles "
+            "it read 62.8% (break-even 52.2% at a 91.5% payout, drift 53.2% on the "
+            "same windows), and 51.8% across 519 signals on the other five pairs. "
+            "That is promising and unproven: keep execution off until the forward "
+            "test has several hundred settled trades, and do not edit the rules "
+            "while it runs -- a changed rule restarts the evidence at zero."
+        ),
+        "settings": {
+            # --- the rules under test ---
+            "assets": ["USDCAD_otc"],
+            "strategy": "impulse_continuation",
+            "trigger": "momentum",
+            "ema_trend": 200,
+            "keltner_ema": 20,
+            "keltner_atr": 10,
+            "keltner_mult": 1.0,
+            "require_ha_alignment": True,
+            "impulse_slope_bars": 5,
+            "impulse_slope_atr": 0.05,
+            "momentum_range_atr": 1.00,
+            "momentum_close_pct": 0.70,
+            "adx_min": 20.0,
+            "adx_max": 35.0,
+            "cooldown_minutes": 4,      # three complete candles between signals
+            # --- the timing they specify ---
+            "expiry_minutes": 1,
+            "adaptive_expiry": False,
+            "lead_minutes": 0,          # act on the confirmed close, no warning
+            # --- everything the rule set does NOT include, turned off ---
+            # Left on, each of these would quietly filter or reshape the
+            # signals and the forward test would measure a different strategy.
+            "min_score": 0.0,
+            "use_higher_timeframe_bias": False,
+            "require_liquidity_sweep": False,
+            "restrict_to_sessions": False,
+            "win_cooldown_minutes": 0,
+            "loss_cooldown_minutes": 0,
+            "martingale_enabled": False,
+            # --- observation only ---
+            "trade_mode": "off",
+            "live_confirmed": False,
+        },
+    },
+}
 
 
 def parse_assets(text: str) -> tuple[list[str], list[str]]:
@@ -87,7 +143,8 @@ class Settings:
     # --- setup + trigger ---
     # The setup picks a direction and why; the trigger decides when to act.
     # Any setup can be paired with any trigger.
-    strategy: str = "trend_continuation"   # trend_continuation | support_resistance | reversal
+    # trend_continuation | support_resistance | reversal | impulse_continuation
+    strategy: str = "trend_continuation"
     trigger: str = "bos"                   # fractal | bos | momentum
 
     # trigger tuning
@@ -107,6 +164,10 @@ class Settings:
     sr_lookback: int = 30
     sr_touch_atr: float = 0.25
     sr_reject_pct: float = 0.5
+
+    # impulse_continuation tuning
+    impulse_slope_bars: int = 5
+    impulse_slope_atr: float = 0.05
 
     # reversal tuning
     rsi_period: int = 14
@@ -241,6 +302,26 @@ class Settings:
         )
 
     # ------------------------------------------------------------------
+    def apply_preset(self, name: str) -> list[str]:
+        """Overwrite every field a named preset specifies. Returns what changed.
+
+        A preset has to set the rules it does *not* want as well as the ones it
+        does. Loading the impulse rules while leaving the 0.60 confidence gate
+        or the higher-timeframe bias switched on would silently produce a
+        different strategy from the one being tested, and the forward test
+        would be measuring something nobody described.
+        """
+        spec = PRESETS.get(name)
+        if spec is None:
+            raise KeyError(f"unknown preset {name!r}")
+        changed = []
+        for key, value in spec["settings"].items():
+            before = getattr(self, key)
+            if before != value:
+                changed.append(f"{key}: {before!r} -> {value!r}")
+            setattr(self, key, copy.deepcopy(value))
+        return changed
+
     def setup_config(self):
         """Build the SetupConfig these settings describe."""
         from .setups import SetupConfig
@@ -255,6 +336,8 @@ class Settings:
             sr_lookback=self.sr_lookback,
             sr_touch_atr=self.sr_touch_atr,
             sr_reject_pct=self.sr_reject_pct,
+            impulse_slope_bars=self.impulse_slope_bars,
+            impulse_slope_atr=self.impulse_slope_atr,
             rsi_period=self.rsi_period,
             rsi_overbought=self.rsi_overbought,
             rsi_oversold=self.rsi_oversold,
@@ -310,6 +393,45 @@ class Settings:
                 "That was your best-performing slice, but it is a deliberate contradiction — "
                 "keep an eye on it."
             )
+        if self.strategy == "impulse_continuation":
+            spec = PRESETS[PRESET_IMPULSE_USDCAD]["settings"]
+            drifted = [
+                k for k in ("trigger", "momentum_range_atr", "momentum_close_pct",
+                            "adx_min", "adx_max", "impulse_slope_bars",
+                            "impulse_slope_atr", "cooldown_minutes", "expiry_minutes",
+                            "lead_minutes", "min_score", "use_higher_timeframe_bias",
+                            "require_liquidity_sweep", "adaptive_expiry")
+                if getattr(self, k) != spec[k]
+            ]
+            if drifted:
+                out.append(
+                    "This is not the impulse rule set as specified — "
+                    + ", ".join(sorted(drifted))
+                    + " differ from the preset. Any forward-test results collected "
+                    "now describe your edited version, not the one under test."
+                )
+            if self.adx_min != spec["adx_min"] or self.adx_max != spec["adx_max"]:
+                out.append(
+                    "The ADX band is the most fragile part of these rules. On stored "
+                    "candles the band 20-35 read 62.8%; widening it to 18-37 dropped "
+                    "it to 54.9% and removing it entirely gave 52.3%. Moving these "
+                    "numbers is not a small change."
+                )
+            if self.trade_mode != "off":
+                out.append(
+                    "The impulse rules are still under test — 94 stored signals and a "
+                    "17-trade forward test are not enough to justify staking money. "
+                    "Leave execution off until the forward test settles several "
+                    "hundred trades."
+                )
+            if len(self.assets) > 1:
+                out.append(
+                    f"The impulse rules are specified for USDCAD OTC alone. On the "
+                    f"other five pairs the same rules read 51.8% over 519 signals, "
+                    f"below the break-even. You have {len(self.assets)} pairs "
+                    "selected; results will pool a tested pair with untested ones."
+                )
+
         if self.trigger == "fractal" and self.fractal_max_age <= 2:
             out.append(
                 "A fractal is only confirmed 3 candles after it forms, so a trigger window of "

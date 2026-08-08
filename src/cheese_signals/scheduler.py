@@ -29,7 +29,8 @@ immediately. Two things mitigate it:
    warning costs you 4 points of win rate on your feed, you will see it and
    can tune ``lead_minutes`` down.
 
-Set ``lead_minutes = 0`` for immediate-entry behaviour with no warning.
+Set ``lead_minutes = 0`` to enter at the close that produced the signal --
+no warning and no skipped candle.
 """
 
 from __future__ import annotations
@@ -44,6 +45,17 @@ PENDING = "pending"
 ACTIVE = "active"
 CANCELLED = "cancelled"
 SETTLED = "settled"
+
+
+def candle_open(now: datetime, timeframe_seconds: int = 60) -> datetime:
+    """The start of the candle ``now`` falls inside.
+
+    Also the instant the previous candle closed, which is what a rule acting
+    on a confirmed close is actually entering at.
+    """
+    epoch = now.replace(tzinfo=now.tzinfo or timezone.utc).timestamp()
+    boundary = (int(epoch) // timeframe_seconds) * timeframe_seconds
+    return datetime.fromtimestamp(boundary, tz=timezone.utc)
 
 
 def next_candle_open(now: datetime, timeframe_seconds: int = 60) -> datetime:
@@ -75,7 +87,11 @@ class PendingSignal:
 
     @property
     def lead_seconds(self) -> int:
-        return int((self.entry_at - self.detected_at).total_seconds())
+        # Never negative: a zero-lead entry is stamped at the boundary the
+        # signal candle closed on, which detection necessarily follows by a
+        # few seconds. Reporting that as -3s of warning would be nonsense,
+        # and the analytics group by this value.
+        return max(int((self.entry_at - self.detected_at).total_seconds()), 0)
 
     @property
     def side(self) -> str:
@@ -111,9 +127,20 @@ def schedule_signal(
 
     Entry is always snapped to a candle open, because a binary option bought
     mid-candle doesn't align with the candle the strategy actually predicted.
+
+    ``lead_minutes = 0`` means *at the close that produced the signal* -- the
+    boundary the current candle opened on, a few seconds in the past. That is
+    a rule set acting on a confirmed close with no delay, and it is a real
+    distinction: scheduling it to the next boundary instead would skip a whole
+    candle and trade a different bar than the one the rules examined.
+
+    Any positive lead counts forward from the next boundary, unchanged.
     """
-    first_open = next_candle_open(detected_at, timeframe_seconds)
-    entry_at = first_open + timedelta(seconds=timeframe_seconds * max(lead_minutes, 0))
+    if lead_minutes <= 0:
+        entry_at = candle_open(detected_at, timeframe_seconds)
+    else:
+        first_open = next_candle_open(detected_at, timeframe_seconds)
+        entry_at = first_open + timedelta(seconds=timeframe_seconds * lead_minutes)
     expiry_at = entry_at + timedelta(minutes=expiry_minutes)
     return PendingSignal(
         asset=asset,

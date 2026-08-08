@@ -35,7 +35,8 @@ from .strategies import DOWN, FLAT, UP, Signal
 SETUP_TREND = "trend_continuation"
 SETUP_SR = "support_resistance"
 SETUP_REVERSAL = "reversal"
-SETUPS = (SETUP_TREND, SETUP_SR, SETUP_REVERSAL)
+SETUP_IMPULSE = "impulse_continuation"
+SETUPS = (SETUP_TREND, SETUP_SR, SETUP_REVERSAL, SETUP_IMPULSE)
 
 SETUP_HELP = {
     SETUP_TREND: (
@@ -49,6 +50,11 @@ SETUP_HELP = {
     SETUP_REVERSAL: (
         "Trades exhaustion against the current move: RSI extreme plus a Bollinger "
         "band tag. Opposes the move that produced it."
+    ),
+    SETUP_IMPULSE: (
+        "Trend continuation with a slope gate: the Keltner mid must itself be "
+        "moving, not merely be on the right side. Under test — use the "
+        "USDCAD Impulse preset and leave execution off."
     ),
 }
 
@@ -71,6 +77,12 @@ class SetupConfig:
     sr_touch_atr: float = 0.25       # how close to the level counts as a touch
     sr_reject_pct: float = 0.5       # wick beyond the level vs the bar range
 
+    # impulse_continuation: everything trend_continuation asks for, plus a
+    # requirement that the Keltner mid is actually travelling. Measured in ATR
+    # so the threshold means the same thing on EURJPY as on AUDUSD.
+    impulse_slope_bars: int = 5
+    impulse_slope_atr: float = 0.05
+
     # reversal
     rsi_period: int = 14
     rsi_overbought: float = 70.0
@@ -83,7 +95,7 @@ class SetupConfig:
     adx_max: float = 100.0
 
     def min_bars(self) -> int:
-        if self.kind == SETUP_TREND:
+        if self.kind in (SETUP_TREND, SETUP_IMPULSE):
             return self.ema_trend + 20
         if self.kind == SETUP_SR:
             return self.sr_lookback + 40
@@ -125,6 +137,41 @@ def _bias_trend(df: pd.DataFrame, cfg: SetupConfig, checks: list[Check]) -> int:
         return FLAT
     checks.append(Check("trend agreement", True, "aligned"))
     return ema_side if not cfg.require_ha_alignment else kc_side
+
+
+def _bias_impulse(df: pd.DataFrame, cfg: SetupConfig, checks: list[Check]) -> int:
+    """Trend continuation, but only while the Keltner mid is travelling.
+
+    Being on the right side of a flat mid-line is a coin flip dressed up as a
+    trend. Requiring the mid to have moved a minimum distance over the last
+    few bars is what separates an impulse from a drift, and it is the one rule
+    here that the other setups do not already have.
+
+    The threshold is in ATR rather than price so that the same number means
+    the same thing across pairs and across volatility regimes.
+    """
+    bias = _bias_trend(df, cfg, checks)
+    if bias == FLAT:
+        return FLAT
+
+    high, low, close = df["high"], df["low"], df["close"]
+    mid = ind.ema(close, cfg.keltner_ema)
+    atr_now = float(ind.atr(high, low, close).iloc[-1])
+    bars = max(cfg.impulse_slope_bars, 1)
+    if len(mid) <= bars or atr_now != atr_now or atr_now <= 0:
+        checks.append(Check("mid-line slope", False, "ATR or EMA not warmed up"))
+        return FLAT
+
+    slope = (float(mid.iloc[-1]) - float(mid.iloc[-1 - bars])) / atr_now
+    needed = cfg.impulse_slope_atr
+    ok = slope >= needed if bias == UP else slope <= -needed
+    checks.append(Check(
+        "mid-line slope", ok,
+        f"EMA{cfg.keltner_ema} moved {slope:+.3f} ATR over {bars} bars, "
+        f"need {'+' if bias == UP else '-'}{needed:.3f} for a "
+        f"{'BUY' if bias == UP else 'SELL'}",
+    ))
+    return bias if ok else FLAT
 
 
 def _bias_sr(df: pd.DataFrame, cfg: SetupConfig, checks: list[Check]) -> int:
@@ -211,6 +258,8 @@ def evaluate(
 
     if setup.kind == SETUP_TREND:
         bias = _bias_trend(df, setup, checks)
+    elif setup.kind == SETUP_IMPULSE:
+        bias = _bias_impulse(df, setup, checks)
     elif setup.kind == SETUP_SR:
         bias = _bias_sr(df, setup, checks)
     elif setup.kind == SETUP_REVERSAL:

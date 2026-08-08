@@ -119,6 +119,11 @@ class SettingsPage(QWidget):
         reset.setObjectName("Ghost")
         reset.clicked.connect(self.reset_defaults)
         footer.addWidget(reset)
+        preset = QPushButton("Load Preset…")
+        preset.setObjectName("Ghost")
+        preset.setToolTip("Load a complete, named rule set — every field at once.")
+        preset.clicked.connect(self.load_preset)
+        footer.addWidget(preset)
         footer.addStretch(1)
         save = QPushButton("Save Settings")
         save.setObjectName("Primary")
@@ -171,6 +176,19 @@ class SettingsPage(QWidget):
         self.require_ha.setToolTip("Off means the trend EMA alone sets direction — more signals, less agreement.")
         grid.addWidget(self.require_ha, 4, 0, 1, 2)
         lay.addWidget(self.box_trend)
+
+        self.box_impulse, grid = _group("Impulse continuation parameters")
+        self.impulse_bars = _row(
+            grid, 0, "Slope measured over", _spin(1, 50, s.impulse_slope_bars, 1, " candles"),
+            "How far back to measure the Keltner mid-line's travel.")
+        self.impulse_slope = _row(
+            grid, 1, "Minimum slope", _spin(0.0, 2.0, s.impulse_slope_atr, 0.01, " ATR", 3),
+            "The mid-line must have moved at least this far, in ATR, in the trade "
+            "direction. This is what separates an impulse from a drift.")
+        _group_hint(grid, 2,
+                    "Shares the trend-continuation parameters above for the Keltner and "
+                    "EMA settings — the slope gate is the only rule added on top.")
+        lay.addWidget(self.box_impulse)
 
         self.box_sr, grid = _group("Support / resistance parameters")
         self.sr_lookback = _row(grid, 0, "Level lookback", _spin(5, 300, s.sr_lookback, 1, " candles"))
@@ -431,7 +449,10 @@ class SettingsPage(QWidget):
         setup = self.strategy.currentText()
         trigger = self.trigger.currentText()
 
-        self.box_trend.setEnabled(setup == setups_mod.SETUP_TREND)
+        # Impulse continuation is trend continuation plus a slope gate, so the
+        # trend parameters stay live for it.
+        self.box_trend.setEnabled(setup in (setups_mod.SETUP_TREND, setups_mod.SETUP_IMPULSE))
+        self.box_impulse.setEnabled(setup == setups_mod.SETUP_IMPULSE)
         self.box_sr.setEnabled(setup == setups_mod.SETUP_SR)
         self.box_rev.setEnabled(setup == setups_mod.SETUP_REVERSAL)
         for box, kind in ((self.box_frac, trig.TRIGGER_FRACTAL),
@@ -530,6 +551,36 @@ class SettingsPage(QWidget):
         self.window.settings = defaults
         QMessageBox.information(self, "Settings", "Defaults restored. Reopen Settings to see them.")
 
+    def load_preset(self):
+        """Apply a complete named rule set and save it immediately.
+
+        Saved rather than left on the widgets because a preset is only useful
+        if it is reproduced exactly; a half-applied one that still carries
+        edits from the previous configuration is the thing this is meant to
+        prevent.
+        """
+        from ..settings import PRESETS
+
+        names = list(PRESETS)
+        name, ok = QInputDialog.getItem(self, "Load preset", "Rule set:", names, 0, False)
+        if not ok:
+            return
+        spec = PRESETS[name]
+        if QMessageBox.question(
+            self, "Load preset",
+            f"{name}\n\n{spec['note']}\n\nThis overwrites every setting the preset "
+            f"names, including your pairs list. Continue?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        changed = self.window.settings.apply_preset(name)
+        self.window.settings.save()
+        QMessageBox.information(
+            self, "Preset loaded",
+            f"{name}\n\n{len(changed)} setting(s) changed. Reopen Settings to see them.\n"
+            "Execution is off: this collects evidence, it does not trade.",
+        )
+
     def save(self):
         mode = self.trade_mode.currentText()
         confirmed = getattr(self.window.settings, "live_confirmed", False)
@@ -575,6 +626,8 @@ class SettingsPage(QWidget):
             keltner_atr=self.keltner_atr.value(),
             keltner_mult=self.keltner_mult.value(),
             require_ha_alignment=self.require_ha.isChecked(),
+            impulse_slope_bars=self.impulse_bars.value(),
+            impulse_slope_atr=self.impulse_slope.value(),
             sr_lookback=self.sr_lookback.value(),
             sr_touch_atr=self.sr_touch.value(),
             sr_reject_pct=self.sr_reject.value(),
