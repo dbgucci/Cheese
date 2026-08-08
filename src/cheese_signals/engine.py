@@ -254,7 +254,10 @@ class SignalEngine:
         so there is no gap and no re-validation: this is a recovery of a
         decision already made, not a fresh setup.
         """
-        if result.won or not self.settings.martingale_enabled:
+        # A refund is not a loss -- there is nothing to recover, because the
+        # stake came back. Doubling up after one would turn a neutral result
+        # into real risk.
+        if result.won or result.refunded or not self.settings.martingale_enabled:
             return None
 
         step = self._martingale_step(sig) + 1
@@ -851,7 +854,10 @@ class SignalEngine:
             sig, sig.entry_price, exit_price, stake=stake, payout=self.payout, settled_at=now
         )
         self.scheduler.mark_settled(sig)
-        self._last_outcome[sig.asset] = (bool(result.won), now)
+        # A refunded trade says nothing about the pair, so it starts neither
+        # the post-win nor the post-loss rest period.
+        if not result.refunded:
+            self._last_outcome[sig.asset] = (bool(result.won), now)
 
         if sig.db_id is not None:
             self.journal.record_outcome(
@@ -865,6 +871,7 @@ class SignalEngine:
                 stake=stake,
                 settled_at=now,
                 reason=result.reason,
+                pnl=result.pnl,
             )
 
         # A loss that is about to be re-entered is not a result yet -- the

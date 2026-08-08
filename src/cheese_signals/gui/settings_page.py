@@ -212,7 +212,9 @@ class SettingsPage(QWidget):
         self.adx_min = _row(grid, 0, "ADX at least", _spin(0, 100, s.adx_min, 1, "", 1),
                             "0 disables the floor.")
         self.adx_max = _row(grid, 1, "ADX at most", _spin(0, 100, s.adx_max, 1, "", 1),
-                            "100 disables the ceiling.")
+                            "100 disables the ceiling. A ceiling of 25 looked strong on "
+                            "the first 855 trades (55.8% vs 44.5%) and then failed on the "
+                            "next 641 (46.5%), so treat it as unproven, not as an edge.")
         self.min_score = _row(grid, 2, "Minimum confidence", _spin(0.0, 1.0, s.min_score, 0.05, "", 2))
         lay.addWidget(box)
 

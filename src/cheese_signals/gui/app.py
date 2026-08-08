@@ -873,13 +873,16 @@ class MainWindow(QMainWindow):
             f"{cancelled} cancelled before entry" if cancelled else "",
         )
 
-        if st["trades"]:
+        decided = int(st["wins"]) + int(st["losses"])
+        if decided:
             colour = theme.BUY if st["win_rate"] >= be else theme.SELL
-            self.live_page.stat_winrate.set_value(
-                f"{st['win_rate']:.1%}",
-                f"break-even {be:.1%} · {int(st['trades'])} trades",
-                colour,
-            )
+            # Refunds are settled but undecided; naming them keeps the trade
+            # count on screen reconcilable with the History tab.
+            refunds = int(st.get("refunds", 0))
+            note = f"break-even {be:.1%} · {decided} trades"
+            if refunds:
+                note += f" · {refunds} refunded"
+            self.live_page.stat_winrate.set_value(f"{st['win_rate']:.1%}", note, colour)
         else:
             self.live_page.stat_winrate.set_value("--", f"break-even {be:.1%}")
 

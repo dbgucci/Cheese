@@ -71,8 +71,21 @@ def _engine(tmp_path, closes, **overrides):
     return eng, feed, note
 
 
-def _place(eng, feed, minute, price):
+def _price_at(feed, minute):
+    """Price at START+minute: the close of the bar stamped one minute earlier.
+
+    Taking the close of the bar stamped START+minute instead names the price a
+    full minute later, which in a monotonic series makes entry equal exit --
+    and that is a refund now, not a loss, so the fixture stopped testing what
+    it claimed to.
+    """
+    return float(feed.all.close.loc[START + timedelta(minutes=minute - 1)])
+
+
+def _place(eng, feed, minute, price=None):
     """An active trade entering at START+minute, expiring a minute later."""
+    if price is None:
+        price = _price_at(feed, minute)
     sig = schedule_signal("EURUSD_otc", UP, 0.8, "trend_continuation+bos", "r",
                           START, "london", lead_minutes=0, expiry_minutes=1)
     sig.entry_at = START + timedelta(minutes=minute)
@@ -96,7 +109,7 @@ FALLING = [1.120 - 0.001 * i for i in range(12)]
 # ------------------------------ a winning first entry ------------------------------
 def test_a_first_entry_win_is_announced_immediately(tmp_path):
     eng, feed, note = _engine(tmp_path, RISING)
-    sig = _place(eng, feed, 4, price=1.103)
+    sig = _place(eng, feed, 4)
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
 
     assert len(note.results) == 1, "a win must be reported at once"
@@ -108,7 +121,7 @@ def test_a_first_entry_win_is_announced_immediately(tmp_path):
 def test_a_losing_first_entry_announces_nothing(tmp_path):
     """The sequence is still open; a loss about to be recovered is not news."""
     eng, feed, note = _engine(tmp_path, FALLING)
-    sig = _place(eng, feed, 4, price=1.116)
+    sig = _place(eng, feed, 4)
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
 
     assert note.results == [], "a recoverable loss was announced"
@@ -116,7 +129,7 @@ def test_a_losing_first_entry_announces_nothing(tmp_path):
 
 def test_a_losing_first_entry_re_enters_on_the_very_next_candle(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING)
-    sig = _place(eng, feed, 4, price=1.116)
+    sig = _place(eng, feed, 4)
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
 
     pending = eng.scheduler.awaiting_entry(sig.expiry_at - timedelta(seconds=1))
@@ -130,7 +143,7 @@ def test_a_losing_first_entry_re_enters_on_the_very_next_candle(tmp_path):
 def test_the_recovery_doubles_the_stake(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING, account_balance=500.0,
                               risk_per_trade=0.02, max_stake=100.0)
-    sig = _place(eng, feed, 4, price=1.116)
+    sig = _place(eng, feed, 4)
     assert eng._stake(sig) == 10.0
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
 
@@ -142,7 +155,7 @@ def test_the_safety_cap_still_binds_on_a_recovery(tmp_path):
     """Doubling must not be a way around max_stake."""
     eng, feed, note = _engine(tmp_path, FALLING, account_balance=500.0,
                               risk_per_trade=0.02, max_stake=15.0)
-    sig = _place(eng, feed, 4, price=1.116)
+    sig = _place(eng, feed, 4)
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
     rec = eng.scheduler.awaiting_entry(sig.expiry_at - timedelta(seconds=1))[0]
     assert eng._stake(rec) == 15.0
@@ -151,13 +164,13 @@ def test_the_safety_cap_still_binds_on_a_recovery(tmp_path):
 # --------------------------- how the sequence finishes ----------------------------
 def test_a_recovery_win_is_announced_and_marked(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING)
-    first = _place(eng, feed, 4, price=1.116)
+    first = _place(eng, feed, 4)
     eng._settle(first, first.expiry_at + timedelta(seconds=1))
     rec = eng.scheduler.awaiting_entry(first.expiry_at - timedelta(seconds=1))[0]
 
     rec.status = ACTIVE
-    rec.entry_price = 1.120          # falling series, UP call -> loses... flip it
-    rec.direction = -1               # make the recovery win
+    rec.entry_price = _price_at(feed, 5)
+    rec.direction = -1               # falling series: a SELL recovery wins
     eng._settle(rec, rec.expiry_at + timedelta(seconds=1))
 
     assert len(note.results) == 1
@@ -168,12 +181,12 @@ def test_a_recovery_win_is_announced_and_marked(tmp_path):
 
 def test_a_recovery_loss_is_announced_with_no_further_re_entry(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING, martingale_reentries=1)
-    first = _place(eng, feed, 4, price=1.116)
+    first = _place(eng, feed, 4)
     eng._settle(first, first.expiry_at + timedelta(seconds=1))
     rec = eng.scheduler.awaiting_entry(first.expiry_at - timedelta(seconds=1))[0]
 
     rec.status = ACTIVE
-    rec.entry_price = 1.116          # falling series, UP call -> loses
+    rec.entry_price = _price_at(feed, 5)   # falling series, UP call -> loses
     eng._settle(rec, rec.expiry_at + timedelta(seconds=1))
 
     assert len(note.results) == 1, "the final loss must be reported"
@@ -184,7 +197,7 @@ def test_a_recovery_loss_is_announced_with_no_further_re_entry(tmp_path):
 
 def test_the_ladder_stops_at_the_configured_depth(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING, martingale_reentries=2)
-    sig = _place(eng, feed, 2, price=1.118)
+    sig = _place(eng, feed, 2)
     steps = []
     for _ in range(5):
         eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
@@ -193,7 +206,7 @@ def test_the_ladder_stops_at_the_configured_depth(tmp_path):
             break
         sig = nxt[0]
         sig.status = ACTIVE
-        sig.entry_price = float(feed.all.close.loc[sig.entry_at])
+        sig.entry_price = _price_at(feed, int((sig.entry_at - START).total_seconds() // 60))
         steps.append(sig.features["martingale_step"])
     assert steps == [1, 2], f"expected two re-entries, got {steps}"
 
@@ -205,7 +218,7 @@ def test_martingale_is_off_by_default():
 
 def test_a_loss_is_announced_normally_when_disabled(tmp_path):
     eng, feed, note = _engine(tmp_path, FALLING, martingale_enabled=False)
-    sig = _place(eng, feed, 4, price=1.116)
+    sig = _place(eng, feed, 4)
     eng._settle(sig, sig.expiry_at + timedelta(seconds=1))
     assert len(note.results) == 1 and not note.results[0].won
     assert not eng.scheduler.awaiting_entry(sig.expiry_at)
@@ -217,15 +230,16 @@ def test_turning_it_on_states_that_it_does_not_change_the_edge():
     assert any("does not change the edge" in c for c in s.conflicts())
 
 
-def test_martingale_without_an_adx_filter_is_called_out():
-    s = Settings(); s.martingale_enabled = True
-    s.adx_min, s.adx_max = 0.0, 100.0
-    assert any("no ADX filter" in c for c in s.conflicts())
+def test_turning_it_on_reports_the_measured_win_rate():
+    """The ADX<25 carve-out this warning used to cite failed out of sample.
 
-
-def test_a_filtered_configuration_drops_that_particular_warning():
+    It read 55.4% on the first 855 trades and 46.5% on the next 641, so the
+    warning no longer offers it as the configuration that rescues martingale.
+    """
     s = Settings(); s.martingale_enabled = True; s.adx_max = 25.0
-    assert not any("no ADX filter" in c for c in s.conflicts())
+    text = " ".join(s.conflicts())
+    assert "48.9%" in text and "break-even" in text
+    assert "no ADX filter" not in text
 
 
 def test_a_deep_ladder_is_called_out():

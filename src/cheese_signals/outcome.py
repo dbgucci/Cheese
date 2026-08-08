@@ -37,6 +37,20 @@ def pips(asset: str, price_delta: float) -> float:
     return price_delta / pip_size(asset)
 
 
+def is_refund(entry_price: Optional[float], exit_price: Optional[float]) -> bool:
+    """A flat close: exit exactly equal to entry.
+
+    Pocket Option returns the stake when the expiry price equals the entry
+    price -- the trade is neither won nor lost. Recording it as a loss cost
+    16 of the first 1,543 live trades a full stake each on paper (-$800 of
+    fictional P/L) and pushed the reported win rate down by about half a
+    point, because those trades stayed in the denominator as losses.
+    """
+    if entry_price is None or exit_price is None:
+        return False
+    return entry_price == exit_price
+
+
 @dataclass
 class Outcome:
     signal: PendingSignal
@@ -50,7 +64,13 @@ class Outcome:
     settled_at: datetime
 
     @property
+    def refunded(self) -> bool:
+        return is_refund(self.entry_price, self.exit_price)
+
+    @property
     def result_word(self) -> str:
+        if self.refunded:
+            return "REFUND"
         return "WIN" if self.won else "LOSS"
 
     @property
@@ -86,8 +106,9 @@ def attribute(
 
     if actual == FLAT:
         return (
-            "Loss: price closed exactly at the entry price (a flat close counts "
-            "as a loss on binary options -- there is no push/refund)."
+            "Refund: price closed exactly at the entry price, so the stake is "
+            "returned. This is neither a win nor a loss and is excluded from "
+            "the win rate."
         )
 
     bits.append(f"predicted {signal.side}, price moved {move:+.1f} pips over the expiry")
@@ -138,7 +159,10 @@ def settle(
 ) -> Outcome:
     actual = _direction_of(entry_price, exit_price)
     won = actual == signal.direction and actual != FLAT
-    pnl = stake * payout if won else -stake
+    if actual == FLAT:
+        pnl = 0.0            # stake returned
+    else:
+        pnl = stake * payout if won else -stake
     reason = attribute(signal, entry_price, exit_price, won)
     return Outcome(
         signal=signal,

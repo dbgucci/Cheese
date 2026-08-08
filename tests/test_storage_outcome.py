@@ -52,7 +52,7 @@ def test_signal_and_outcome_roundtrip(journal):
         s.expiry_at, "Win: reason",
     )
     counts = journal.summary_counts()
-    assert counts == {"settled": 1, "wins": 1, "losses": 0, "pending": 0}
+    assert counts == {"settled": 1, "wins": 1, "losses": 0, "refunds": 0, "pending": 0}
 
     rows = journal.joined_results()
     assert len(rows) == 1
@@ -82,12 +82,19 @@ def test_settle_win_and_loss():
     assert not loss.won and loss.pnl == pytest.approx(-10.0)
 
 
-def test_flat_close_is_a_loss():
+def test_flat_close_is_refunded_not_lost():
+    """Pocket Option returns the stake when the expiry price equals entry.
+
+    Recorded as a loss it cost a full stake on paper each time it happened.
+    See tests/test_refunds.py for the rest of the behaviour.
+    """
     s = _sig(direction=UP)
     now = datetime.now(timezone.utc)
     res = om.settle(s, 1.1000, 1.1000, stake=10, payout=0.85, settled_at=now)
     assert not res.won
-    assert "flat close" in res.reason
+    assert res.refunded
+    assert res.pnl == 0.0
+    assert "returned" in res.reason
 
 
 def test_attribution_mentions_key_conditions():

@@ -105,7 +105,11 @@ class TelegramNotifier:
         # two stakes to get one payout, so netting is smaller. Labelling them
         # the same would make the Telegram feed read better than the account.
         step = int((getattr(sig, "features", None) or {}).get("martingale_step", 0))
-        if outcome.won:
+        if getattr(outcome, "refunded", False):
+            # Flat close: Pocket Option returns the stake. Reporting this as a
+            # loss made the feed disagree with the account balance.
+            icon = "➖ *REFUND*"
+        elif outcome.won:
             icon = "✅ *WIN* \\(recovery\\)" if step else "✅ *WIN*"
         else:
             icon = "❌ *LOSS* \\(after recovery\\)" if step else "❌ *LOSS*"

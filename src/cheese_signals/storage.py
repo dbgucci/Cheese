@@ -316,8 +316,12 @@ class Journal:
         stake: float,
         settled_at: datetime,
         reason: str,
+        pnl: Optional[float] = None,
     ) -> None:
-        pnl = stake * payout if won else -stake
+        # A flat close is refunded, not lost, so the caller's P/L wins over the
+        # win/loss formula when it is supplied.
+        if pnl is None:
+            pnl = 0.0 if entry_price == exit_price else (stake * payout if won else -stake)
         with self._tx() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO outcomes(signal_id, asset, direction, entry_price, "
@@ -374,22 +378,30 @@ class Journal:
         Python on each update, which grew linearly and stalled the interface
         as history accumulated. Aggregates belong in the database.
         """
+        # Refunds (a flat close, stake returned) are settled trades but not
+        # decided ones. Leaving them in the denominator understates the win
+        # rate by counting a returned stake as a loss.
         row = self._conn.execute(
             "SELECT COUNT(*) AS n, "
             "COALESCE(SUM(won), 0) AS wins, "
-            "COALESCE(SUM(pnl), 0.0) AS pnl "
+            "COALESCE(SUM(pnl), 0.0) AS pnl, "
+            "COALESCE(SUM(entry_price = exit_price), 0) AS refunds "
             "FROM outcomes"
         ).fetchone()
         pending = self._conn.execute(
             "SELECT COUNT(*) FROM signals WHERE status IN ('pending','active')"
         ).fetchone()[0]
         n = int(row["n"])
+        refunds = int(row["refunds"])
+        wins = int(row["wins"])
+        decided = n - refunds
         return {
             "trades": n,
-            "wins": int(row["wins"]),
-            "losses": n - int(row["wins"]),
+            "wins": wins,
+            "losses": decided - wins,
+            "refunds": refunds,
             "pnl": float(row["pnl"]),
-            "win_rate": (int(row["wins"]) / n) if n else 0.0,
+            "win_rate": (wins / decided) if decided else 0.0,
             "pending": int(pending),
         }
 
@@ -435,7 +447,11 @@ class Journal:
     def summary_counts(self) -> dict[str, int]:
         c = self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0]
         w = self._conn.execute("SELECT COUNT(*) FROM outcomes WHERE won = 1").fetchone()[0]
+        r = self._conn.execute(
+            "SELECT COUNT(*) FROM outcomes WHERE entry_price = exit_price"
+        ).fetchone()[0]
         p = self._conn.execute(
             "SELECT COUNT(*) FROM signals WHERE status IN ('pending','active')"
         ).fetchone()[0]
-        return {"settled": int(c), "wins": int(w), "losses": int(c - w), "pending": int(p)}
+        return {"settled": int(c), "wins": int(w), "losses": int(c - w - r),
+                "refunds": int(r), "pending": int(p)}

@@ -189,7 +189,8 @@ def test_full_lifecycle_settles_a_loss(journal):
     eng._settle(sig, sig.expiry_at)
 
     assert cap["results"][0].won is False
-    assert journal.summary_counts() == {"settled": 1, "wins": 0, "losses": 1, "pending": 0}
+    assert journal.summary_counts() == {"settled": 1, "wins": 0, "losses": 1,
+                                        "refunds": 0, "pending": 0}
 
 
 def test_one_signal_per_asset_at_a_time(journal):

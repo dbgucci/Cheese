@@ -19,6 +19,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor, QFont
 
 from . import theme
+from ..analytics import is_refund as _refunded
 
 COLUMNS = ("Time (UTC)", "Pair", "Side", "Conf.", "Setup", "Result", "P/L", "Why")
 
@@ -86,6 +87,8 @@ class TradeTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.ForegroundRole:
             if col in (RESULT, PNL):
+                if _refunded(row):
+                    return self._muted
                 return self._buy if won else self._sell
             if col in (SETUP, WHY):
                 return self._faint
@@ -117,6 +120,8 @@ class TradeTableModel(QAbstractTableModel):
         if col == SETUP:
             return str(row.get("strategy", ""))
         if col == RESULT:
+            if _refunded(row):
+                return "REFUND"
             return "WIN" if won else "LOSS"
         if col == PNL:
             return f"{float(row.get('pnl') or 0):+.2f}"
@@ -136,7 +141,6 @@ def matches(row: dict[str, Any], needle: str) -> bool:
         return True
     # Let "buy"/"sell"/"win"/"loss" match the rendered words, which are
     # derived rather than stored.
-    derived = ("buy" if row.get("direction") == 1 else "sell") + (
-        " win" if row.get("won") else " loss"
-    )
+    result = "refund" if _refunded(row) else ("win" if row.get("won") else "loss")
+    derived = ("buy" if row.get("direction") == 1 else "sell") + " " + result
     return needle in derived

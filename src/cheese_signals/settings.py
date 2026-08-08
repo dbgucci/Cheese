@@ -376,14 +376,13 @@ class Settings:
                     f"{worst}x the stake. Simulated on this app's own results, ladders "
                     f"beyond one re-entry busted the account most of the time."
                 )
-            if self.adx_max >= 100 and self.adx_min <= 0:
-                out.append(
-                    "Martingale is on with no ADX filter. On 815 logged trades the "
-                    "unfiltered win rate was 51.4% (below the 54.1% break-even) and "
-                    "ADX<25 was 55.4%. Martingale roughly doubles the money at a "
-                    "winning rate and roughly guarantees ruin at a losing one, so "
-                    "this pairing is the worst of the two."
-                )
+            out.append(
+                "Martingale is on. On 1,543 logged trades no configuration of this "
+                "app has cleared the 54.1% break-even — the pooled rate is 48.9%. "
+                "Martingale roughly doubles the money at a winning rate and roughly "
+                "guarantees ruin at a losing one, so it magnifies whichever one you "
+                "actually have."
+            )
             if self.adaptive_expiry:
                 out.append(
                     "Martingale re-enters on the next candle for the fixed expiry, so "

@@ -81,12 +81,24 @@ def describe_versions(rows: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def is_refund(row: dict[str, Any]) -> bool:
+    """A settled trade that was refunded rather than decided.
+
+    Pocket Option returns the stake when the expiry price equals the entry
+    price. Such a trade has no information in it either way, so it belongs in
+    neither the numerator nor the denominator of a win rate.
+    """
+    e, x = row.get("entry_price"), row.get("exit_price")
+    return e is not None and x is not None and e == x
+
+
 @dataclass
 class Slice:
     key: str
-    trades: int
+    trades: int          # decided trades only -- refunds are excluded
     wins: int
     pnl: float
+    refunds: int = 0
 
     @property
     def win_rate(self) -> float:
@@ -94,7 +106,13 @@ class Slice:
 
     @property
     def avg_pnl(self) -> float:
-        return self.pnl / self.trades if self.trades else 0.0
+        """Average over every settled trade, refunds included.
+
+        Unlike the win rate, P/L per trade should carry refunds: a refunded
+        trade really did occupy a slot and really did return zero.
+        """
+        n = self.trades + self.refunds
+        return self.pnl / n if n else 0.0
 
     def edge_vs_breakeven(self, payout: float) -> float:
         return self.win_rate - breakeven_win_rate(payout)
@@ -113,9 +131,10 @@ def _group(rows: Iterable[dict[str, Any]], keyfn: Callable[[dict[str, Any]], Opt
     out = [
         Slice(
             key=k,
-            trades=len(v),
+            trades=sum(1 for x in v if not is_refund(x)),
             wins=sum(1 for x in v if x.get("won")),
             pnl=sum(float(x.get("pnl") or 0.0) for x in v),
+            refunds=sum(1 for x in v if is_refund(x)),
         )
         for k, v in buckets.items()
     ]
@@ -150,9 +169,10 @@ def breakdown(rows: list[dict[str, Any]]) -> dict[str, list[Slice]]:
 def overall(rows: list[dict[str, Any]]) -> Slice:
     return Slice(
         key="overall",
-        trades=len(rows),
+        trades=sum(1 for r in rows if not is_refund(r)),
         wins=sum(1 for r in rows if r.get("won")),
         pnl=sum(float(r.get("pnl") or 0.0) for r in rows),
+        refunds=sum(1 for r in rows if is_refund(r)),
     )
 
 
@@ -160,7 +180,7 @@ def loss_reasons(rows: list[dict[str, Any]], limit: int = 10) -> list[tuple[str,
     """Most frequent conditions appearing in losing trades' attributed reasons."""
     tally: dict[str, int] = defaultdict(int)
     for r in rows:
-        if r.get("won"):
+        if r.get("won") or is_refund(r):
             continue
         reason = r.get("outcome_reason") or ""
         for part in reason.split(";"):
