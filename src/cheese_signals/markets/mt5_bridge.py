@@ -49,12 +49,25 @@ class SymbolSpec:
     volume_step: float
     volume_max: float
     spread_current: float         # in points, as the terminal reports it
+    tick_size: float = 0.0        # price change per tick_value; often == point
+    stops_level: int = 0          # minimum SL/TP distance from price, in points
+    freeze_level: int = 0
     swap_long: float = 0.0
     swap_short: float = 0.0
     trade_allowed: bool = True
 
-    def money_per_point(self, lots: float) -> float:
-        return self.tick_value * lots * (self.point / self.point)
+    def money_per_point(self, lots: float = 1.0) -> float:
+        """Account currency gained per point of favourable move, per ``lots``.
+
+        ``tick_value`` is the money per *tick*, and a tick is not always a
+        point -- on several index CFDs a tick is ten points. Dividing through
+        by the ratio is the difference between sizing a position correctly
+        and sizing it ten times too large, which is not an error a live
+        account survives twice.
+        """
+        tick = self.tick_size or self.point
+        ticks_per_point = self.point / tick if tick else 1.0
+        return self.tick_value * ticks_per_point * lots
 
 
 class Broker(Protocol):
@@ -143,7 +156,9 @@ class MT5Feed:
             name=i.name, point=i.point, digits=i.digits,
             contract_size=i.trade_contract_size, tick_value=i.trade_tick_value,
             volume_min=i.volume_min, volume_step=i.volume_step, volume_max=i.volume_max,
-            spread_current=float(i.spread), swap_long=i.swap_long, swap_short=i.swap_short,
+            spread_current=float(i.spread), tick_size=i.trade_tick_size,
+            stops_level=int(i.trade_stops_level), freeze_level=int(i.trade_freeze_level),
+            swap_long=i.swap_long, swap_short=i.swap_short,
             trade_allowed=i.trade_mode != self._mt5.SYMBOL_TRADE_MODE_DISABLED,
         )
 
