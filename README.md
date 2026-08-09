@@ -50,6 +50,11 @@ included.
 - **History stays instant as the journal grows** — the table is a model/view
   that renders only the rows on screen, with search across pair, setup and
   reason. Opening 5,000 trades costs about 80 ms.
+- **A separate real-market autobot** (`markets/`) trades an opening range
+  breakout on FX, gold, silver and the US index CFDs through MetaTrader 5,
+  with the broker's own spreads charged in the backtest and a cost wall that
+  refuses instruments where the spread takes more than the move.
+  [Details below](#real-markets-the-opening-range-autobot).
 
 ## Screenshots
 
@@ -204,6 +209,162 @@ instead.
 Always read the `baseline` line the lab prints first. It shows what
 always-BUY and always-SELL scored on the same candles; a strategy that
 cannot beat those is showing you the window's drift, not skill.
+
+## Real markets: the opening-range autobot
+
+Everything above trades Pocket Option binary options. `src/cheese_signals/markets/`
+is a separate project inside the same repository that trades **real CFDs**
+through a MetaTrader 5 broker — FX, gold and silver, and the US index CFDs
+(US30, SPX500, NAS100) — using an **opening range breakout**.
+
+It is separate because the economics are different in a way that changes
+every decision. A binary option pays a fixed 85% and the only question is
+directional accuracy above 54.05%. A CFD pays whatever the move was and
+charges a spread every time, so the question becomes whether the edge per
+trade exceeds the *cost* per trade — and unlike the binary case, that is
+measurable in advance, per instrument, before any strategy exists.
+
+### Why an opening range, specifically
+
+An exchange opening is one of the few moments in a trading day with a real
+mechanism behind it. Orders accumulated overnight — from time zones that were
+awake while this market was not, from funds that mark against the open, from
+retail queued before the bell — are released into a few minutes of
+concentrated flow. The high and low of that flurry are the day's first agreed
+boundaries, and price leaving them means the overnight balance did not hold.
+
+That is a genuine mechanism, which is exactly what the OTC setups could never
+appeal to. It is still only an appeal, and the backtester is what decides it.
+
+### The two clocks that break session strategies silently
+
+Both of these produce no error, no warning, and a bot that trades happily
+against a range it computed over the wrong minutes.
+
+1. **The exchange's clock moves.** The New York cash open is 09:30
+   America/New_York all year, which is **13:30 UTC in summer and 14:30 UTC in
+   winter**. A session hardcoded as a UTC hour is wrong for about five months
+   of the year. Worse, the US and Europe change clocks on different dates, so
+   for two or three weeks each spring and autumn London and New York are four
+   hours apart rather than five — which breaks even a bot diligent enough to
+   keep two hardcoded tables. `markets/clock.py` names the exchange's zone and
+   lets `zoneinfo` do the arithmetic.
+2. **The broker's clock is not UTC.** MetaTrader stamps bars and ticks with
+   *server* time, delivered as a Unix timestamp of the server's wall clock.
+   Most forex brokers run EET, so a frame that looks like UTC actually reads
+   two or three hours ahead of it, and a bot hunting the 13:30 UTC open finds
+   the bar for 11:30 New York time — lunchtime, mid-session, no opening range
+   anywhere near it. The offset varies by broker, so it is **measured** from a
+   live tick rather than assumed, and applied once at the edge.
+
+### What the backtester refuses to flatter
+
+`markets/orb_backtest.py` exists to try to talk you out of trading. Where an
+assumption had to be made, it favours losing:
+
+- **Which came first inside the bar.** A one-minute bar containing both the
+  stop and the target could have hit either first and the OHLC does not say
+  which. The stop is assumed, and **the share of trades resolved that way is
+  reported** — if it is large, the result is an artefact of that rule rather
+  than a finding about the market.
+- **Bars are bid; fills are not.** A long is filled at the ask and exits on
+  the bid, so it pays the spread once *and* its stop sits nearer than the
+  chart suggests. Both effects are modelled by constructing fills on the
+  correct side of the book, rather than deducting the spread from the profit —
+  which gets the money roughly right and the stop distance wrong.
+- **The spread charged is the one quoted that morning**, taken from the
+  opening range's own bars. A long-run average hides the widened mornings, and
+  the widened mornings are the ones a live bot trades through.
+- **The bar that triggers a close-through entry cannot resolve it.** The entry
+  price is that bar's close, so the position does not exist until the bar
+  does.
+
+Every run prints three comparisons alongside the strategy, because none of the
+numbers mean anything alone:
+
+| run | what it tells you |
+|---|---|
+| `strategy` | the rules as configured |
+| `inverted` | every signal taken backwards — if this also makes money you have found the window's drift, not an edge |
+| `zero_cost` | the same trades with no spread or commission — the gap is what the broker takes, in R rather than assumed small |
+| `no_filters` | the range and cost filters off — if this scores as well, the filters are decoration and just more surface to curve-fit |
+
+There is a test, `test_a_driftless_random_walk_yields_about_nothing`, whose
+only job is to catch lookahead: a random walk contains no edge, so a correct
+simulator must find none. A peeking one reports half an R per trade with a
+straight face, and nothing else detects it.
+
+### What kills opening-range bots, and the setting for each
+
+Not the entry rule. Four other things, each a limit in `OrbConfig` rather than
+a comment:
+
+| failure | setting | default |
+|---|---|---|
+| range days chopping the bot up in both directions | `max_trades_per_session`, `one_direction_per_session` | 1 trade, one direction |
+| a range too narrow to pay for itself | `min_range_cost_multiple` | range ≥ 3× the round-trip cost |
+| a range so wide the move already happened | `max_range_adr_fraction` | ≤ 60% of the average daily range |
+| holding into the close, paying swap and gapping | `flat_before_close_minutes` | flat 10 min before the bell |
+
+Results are reported in **R** — multiples of the risk taken — because R is the
+only unit that survives a change of account size, instrument or leverage.
+Money follows once you pick a risk fraction, and the conversion is deliberately
+linear: compounding a backtest supplies the exponent from the assumption.
+
+### Running it
+
+The MT5 Python package is Windows-only and attaches to a **running, logged-in
+terminal**. Point it at your broker's MT5 server; if your broker offers both a
+web platform and MT5 on the same account (Liquid Brokers, for instance), the
+bot trades the same balance and positions either front end shows.
+
+```bash
+pip install MetaTrader5          # Windows only
+
+# 0. Is this the right account, can it trade, and when does each session open?
+python -m cheese_signals.markets.autobot check
+
+# 1. Does any instrument clear the cost wall at all? (Do this before anything else.)
+python -m cheese_signals.markets.survey --days 90
+
+# 2. Walk the rules forward over the broker's own history and real spreads.
+python -m cheese_signals.markets.autobot backtest --days 180 --commission 0
+
+# 3. Trade it. Dry run by default: nothing reaches the broker without --live,
+#    and --live requires typing a confirmation.
+python -m cheese_signals.markets.autobot run --risk 0.005
+python -m cheese_signals.markets.autobot run --risk 0.005 --live
+```
+
+**There are no live results in this README, and that is not an omission.** The
+backtest needs your broker's history and your broker's quoted spreads; numbers
+from a different broker's feed would describe a different strategy. Run step 1
+and step 2 and read the four-way comparison — if `inverted` matches
+`strategy`, or the edge only exists in `zero_cost`, the answer is no, and the
+tool has done its job.
+
+### The safety layer
+
+Off by default and failing closed, in the same spirit as the binary side:
+
+- **`dry_run=True` is the default.** `--live` is the only way off it, and it
+  prompts for a typed confirmation against the real account's balance.
+- **Sizing is derived from the stop distance**, never a fixed lot size. A
+  fixed lot means risk varies with volatility, which is the same as having no
+  risk policy. Volumes round *down* onto the broker's step — rounding up
+  overshoots the budget.
+- **Circuit breakers** (`markets/guards.py`): daily loss limit, consecutive-loss
+  halt, max open positions, trades per day, equity floor, news blackout,
+  weekend flat. None can be overridden by a signal, however strong.
+- **Closed positions are fed back into the breakers**, using the broker's
+  realised profit. Without that step the consecutive-loss halt sits at zero
+  forever — safety rails configured and not connected, which is worse than
+  none because the bot reports that it has them.
+- **A live spread gate** refuses a trade when the spread exceeds what the
+  strategy was tested at. Without it the bot faithfully executes the trades
+  the backtest proved unprofitable.
+- **Positions are reconciled with the broker every cycle**, never remembered.
+  Trades opened by hand are neither counted nor closed.
 
 ## What's actually in here
 
@@ -420,6 +581,16 @@ src/cheese_signals/
     models.py         History table model (keeps the tab instant)
     icons.py          nav icons, drawn rather than bundled
     branding.py       KPS logo and .ico generation
+  markets/            real CFDs through MetaTrader 5 -- a separate project
+    costs.py          the cost wall: what a strategy must clear to be worth writing
+    clock.py          DST-correct session opens, and the broker's server offset
+    orb.py            the opening-range rules, as pure functions over bars
+    orb_backtest.py   walk-forward simulation with the spread charged on both sides
+    autobot.py        the live cycle, and the CLI (check / backtest / run)
+    execution.py      order placement, sizing, stop distances, the spread gate
+    guards.py         circuit breakers that no signal can override
+    mt5_bridge.py     MT5Feed (read), MT5Trader (write), ReplayFeed (tests)
+    survey.py         run the cost wall against a live account and report
 tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
 ```
