@@ -128,6 +128,17 @@ def make_trader(broker, args, notifier=None) -> tuple[Trader, NewsFeed, list[str
         raise SystemExit("None of the requested instruments are available. "
                          + "; ".join(missing))
 
+    # Spread limits are configured against the name the user typed, while the
+    # plan carries the broker's decorated symbol (XAUUSD.r, NAS100cash), so
+    # they are matched by prefix rather than exactly. Getting this wrong
+    # silently disables the gate, which is the failure that matters.
+    configured = getattr(args, "max_spread_points", None) or {}
+    for plan in plans:
+        for wanted, limit in configured.items():
+            if plan.symbol.upper().startswith(wanted.upper()):
+                plan.max_spread_points = float(limit)
+                break
+
     guards = Guards(GuardConfig(
         max_daily_loss_fraction=args.max_daily_loss,
         max_open_positions=args.max_positions,
