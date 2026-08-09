@@ -256,3 +256,121 @@ def fetch_all(
             continue
         frames[s] = df
     return frames, problems
+
+
+class MT5Trader(MT5Feed):
+    """MT5Feed plus order placement. Windows only.
+
+    Filling mode is read from the symbol rather than hardcoded: brokers
+    support different subsets, and an unsupported mode is rejected with an
+    error that looks unrelated to filling.
+    """
+
+    def account(self):                                  # pragma: no cover
+        from .execution import AccountState
+        a = self._mt5.account_info()
+        if a is None:
+            raise RuntimeError("no account_info; the terminal is not logged in")
+        return AccountState(balance=a.balance, equity=a.equity,
+                            margin_free=a.margin_free, currency=a.currency)
+
+    def tick(self, symbol: str):                        # pragma: no cover
+        return self.quote(symbol)
+
+    def positions(self, magic=None):                    # pragma: no cover
+        from datetime import datetime as _dt
+        from .execution import Position
+        raw = self._mt5.positions_get()
+        out = []
+        for p in raw or []:
+            if magic is not None and p.magic != magic:
+                continue
+            out.append(Position(
+                ticket=p.ticket, symbol=p.symbol,
+                direction=1 if p.type == self._mt5.POSITION_TYPE_BUY else -1,
+                lots=p.volume, open_price=p.price_open, stop_loss=p.sl,
+                take_profit=p.tp,
+                opened_at=_dt.fromtimestamp(p.time, tz=timezone.utc),
+                profit=p.profit, magic=p.magic, comment=p.comment))
+        return out
+
+    def _filling(self, symbol: str) -> int:             # pragma: no cover
+        info = self._mt5.symbol_info(symbol)
+        modes = getattr(info, "filling_mode", 0)
+        # SYMBOL_FILLING_FOK = 1, SYMBOL_FILLING_IOC = 2 as a bitmask.
+        if modes & 2:
+            return self._mt5.ORDER_FILLING_IOC
+        if modes & 1:
+            return self._mt5.ORDER_FILLING_FOK
+        return self._mt5.ORDER_FILLING_RETURN
+
+    def send(self, order):                              # pragma: no cover
+        from .execution import BUY, OrderResult
+        bid, ask = self.quote(order.symbol)
+        price = ask if order.direction == BUY else bid
+        req = {
+            "action": self._mt5.TRADE_ACTION_DEAL,
+            "symbol": order.symbol,
+            "volume": float(order.lots),
+            "type": (self._mt5.ORDER_TYPE_BUY if order.direction == BUY
+                     else self._mt5.ORDER_TYPE_SELL),
+            "price": price,
+            "sl": float(order.stop_loss),
+            "deviation": 20,
+            "magic": int(order.magic),
+            "comment": order.comment[:31],
+            "type_time": self._mt5.ORDER_TIME_GTC,
+            "type_filling": self._filling(order.symbol),
+        }
+        if order.take_profit:
+            req["tp"] = float(order.take_profit)
+        r = self._mt5.order_send(req)
+        if r is None:
+            code, msg = self._mt5.last_error()
+            return OrderResult(False, f"order_send returned nothing: {code} {msg}")
+        if r.retcode != self._mt5.TRADE_RETCODE_DONE:
+            return OrderResult(False, f"{r.retcode} {r.comment}", retcode=r.retcode)
+        return OrderResult(True, ticket=r.order, price=r.price, lots=r.volume,
+                           retcode=r.retcode)
+
+    def close(self, position, reason=""):               # pragma: no cover
+        from .execution import BUY, OrderResult
+        bid, ask = self.quote(position.symbol)
+        closing_buy = position.direction != BUY
+        req = {
+            "action": self._mt5.TRADE_ACTION_DEAL,
+            "symbol": position.symbol,
+            "volume": float(position.lots),
+            "type": (self._mt5.ORDER_TYPE_BUY if closing_buy
+                     else self._mt5.ORDER_TYPE_SELL),
+            "position": int(position.ticket),
+            "price": ask if closing_buy else bid,
+            "deviation": 20,
+            "magic": int(position.magic),
+            "comment": reason[:31],
+            "type_time": self._mt5.ORDER_TIME_GTC,
+            "type_filling": self._filling(position.symbol),
+        }
+        r = self._mt5.order_send(req)
+        if r is None or r.retcode != self._mt5.TRADE_RETCODE_DONE:
+            code = getattr(r, "retcode", None)
+            return OrderResult(False, f"close failed: {code} "
+                                      f"{getattr(r, 'comment', self._mt5.last_error())}",
+                               retcode=code)
+        return OrderResult(True, ticket=position.ticket, price=r.price,
+                           retcode=r.retcode)
+
+    def modify(self, position, stop_loss, take_profit=None):   # pragma: no cover
+        from .execution import OrderResult
+        req = {
+            "action": self._mt5.TRADE_ACTION_SLTP,
+            "symbol": position.symbol,
+            "position": int(position.ticket),
+            "sl": float(stop_loss),
+            "tp": float(take_profit or position.take_profit or 0.0),
+        }
+        r = self._mt5.order_send(req)
+        if r is None or r.retcode != self._mt5.TRADE_RETCODE_DONE:
+            code = getattr(r, "retcode", None)
+            return OrderResult(False, f"modify failed: {code}", retcode=code)
+        return OrderResult(True, ticket=position.ticket, retcode=r.retcode)
