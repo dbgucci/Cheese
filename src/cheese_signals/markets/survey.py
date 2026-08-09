@@ -158,6 +158,56 @@ def _widest_hours(by_hour: dict[str, pd.DataFrame], top: int = 3) -> list[str]:
     return lines
 
 
+def format_check(diag: dict, found: dict[str, str], missing: list[str],
+                 quotes: dict[str, tuple[float, float, float]]) -> str:
+    """First-contact diagnostic: is this the right account, and can it trade?"""
+    algo = "yes" if diag["algo_allowed"] else (
+        'NO - tick "Algo Trading" in the terminal toolbar')
+    experts = "yes" if diag["trade_expert"] else (
+        "NO - the broker has not enabled automated trading on this account")
+    out = [
+        "CONNECTION CHECK",
+        "",
+        f"  terminal     {diag['terminal']}",
+        f"  broker       {diag['company']}",
+        f"  server       {diag['server']}",
+        f"  account      {diag['login']}  ({diag['currency']}, 1:{diag['leverage']})",
+        f"  balance      {diag['balance']:.2f}    equity {diag['equity']:.2f}",
+        f"  connected    {'yes' if diag['connected'] else 'NO'}",
+        f"  algo allowed {algo}",
+        f"  EAs on acct  {experts}",
+        "",
+        "INSTRUMENTS",
+    ]
+    if quotes:
+        out.append(f"  {'wanted':10s} {'broker symbol':18s} {'bid':>12s} {'ask':>12s} "
+                   f"{'spread(pts)':>12s}")
+        for want, (bid, ask, pts) in sorted(quotes.items()):
+            out.append(f"  {want:10s} {found[want]:18s} {bid:12.5f} {ask:12.5f} {pts:12.1f}")
+    else:
+        out.append("  none of the requested instruments could be quoted")
+    if missing:
+        out += ["", "NOT OFFERED ON THIS ACCOUNT", *[f"  - {m}" for m in missing]]
+    out += ["", "Spreads above are a single snapshot, not a measurement.",
+            "Run without --check for the 90-day survey."]
+    return "\n".join(out)
+
+
+def check(broker, symbols: Optional[list[str]] = None) -> str:   # pragma: no cover
+    diag = broker.diagnostics()
+    found, missing = resolve(broker, symbols or DEFAULT_SYMBOLS)
+    quotes = {}
+    for want, actual in found.items():
+        try:
+            bid, ask = broker.quote(actual)
+            point = broker.spec(actual).point
+        except (KeyError, RuntimeError):
+            missing.append(f"{want} (listed as {actual} but will not quote)")
+            continue
+        quotes[want] = (bid, ask, (ask - bid) / point if point else 0.0)
+    return format_check(diag, found, missing, quotes)
+
+
 def main(argv: Optional[list[str]] = None) -> int:      # pragma: no cover
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--days", type=int, default=90)
@@ -167,16 +217,19 @@ def main(argv: Optional[list[str]] = None) -> int:      # pragma: no cover
     ap.add_argument("--server", default="")
     ap.add_argument("--terminal", default=None, help="path to terminal64.exe")
     ap.add_argument("--out", default=None, help="write the report to this file too")
+    ap.add_argument("--check", action="store_true",
+                    help="connection and instrument check only; no history pulled")
     args = ap.parse_args(argv)
 
     broker = MT5Feed(login=args.login, password=args.password,
                      server=args.server, terminal_path=args.terminal)
     try:
-        result = run(broker, symbols=args.symbols, days=args.days)
+        if args.check:
+            text = check(broker, symbols=args.symbols)
+        else:
+            text = format_report(run(broker, symbols=args.symbols, days=args.days))
     finally:
         broker.close()
-
-    text = format_report(result)
     print(text)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:

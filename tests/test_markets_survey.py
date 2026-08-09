@@ -164,3 +164,55 @@ def test_a_broker_offering_nothing_produces_a_report_not_a_crash():
     text = survey.format_report(r)
     assert "No instrument returned usable data." in text
     assert r["problems"]
+
+
+# ------------------------------ the connection check ------------------------------
+def _diag(**over):
+    d = {"terminal": "Liquid Brokers MT5", "terminal_path": r"C:\LB\terminal64.exe",
+         "connected": True, "algo_allowed": True, "login": 512345,
+         "server": "LiquidBrokers-Live", "company": "Liquid Brokers Pty Ltd",
+         "currency": "USD", "balance": 1000.0, "equity": 1000.0, "leverage": 500,
+         "trade_expert": True}
+    d.update(over)
+    return d
+
+
+def test_the_check_names_the_broker_it_actually_connected_to():
+    """The Python package attaches to whichever terminal is running.
+
+    With more than one MT5 installed that can silently be a different
+    broker, so the check prints who answered rather than who was intended.
+    """
+    text = survey.format_check(_diag(), {"XAUUSD": "XAUUSD"}, [],
+                               {"XAUUSD": (2400.10, 2400.35, 25.0)})
+    assert "Liquid Brokers Pty Ltd" in text and "LiquidBrokers-Live" in text
+    assert "512345" in text
+
+
+def test_algo_trading_switched_off_is_called_out():
+    """It blocks orders while leaving data working, which looks like a
+    strategy that simply never fires."""
+    text = survey.format_check(_diag(algo_allowed=False), {}, [], {})
+    assert "NO - tick" in text and "Algo Trading" in text
+
+
+def test_an_account_without_expert_advisors_enabled_is_called_out():
+    text = survey.format_check(_diag(trade_expert=False), {}, [], {})
+    assert "the broker has not enabled automated trading" in text
+
+
+def test_the_check_shows_the_broker_symbol_next_to_the_requested_one():
+    text = survey.format_check(_diag(), {"NAS100": "NAS100.cash"}, [],
+                               {"NAS100": (20000.0, 20002.0, 20.0)})
+    assert "NAS100.cash" in text
+
+
+def test_the_check_lists_instruments_the_account_does_not_offer():
+    text = survey.format_check(_diag(), {}, ["US30", "SPX500"], {})
+    assert "NOT OFFERED" in text and "US30" in text and "SPX500" in text
+
+
+def test_the_check_does_not_present_a_snapshot_as_a_measurement():
+    text = survey.format_check(_diag(), {"XAUUSD": "XAUUSD"}, [],
+                               {"XAUUSD": (2400.1, 2400.35, 25.0)})
+    assert "not a measurement" in text

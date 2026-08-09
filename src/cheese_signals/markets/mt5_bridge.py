@@ -143,6 +143,41 @@ class MT5Feed:
     def close(self) -> None:                       # pragma: no cover
         self._mt5.shutdown()
 
+    def diagnostics(self) -> dict:                 # pragma: no cover
+        """What the terminal and account actually are, before trusting either.
+
+        Worth checking explicitly because two of the three ways this fails
+        are silent: the Python package attaches to whichever terminal is
+        running, so with more than one MT5 installed it can connect to a
+        different broker than intended; and algo trading disabled in the
+        toolbar blocks orders while leaving data working perfectly, which
+        looks like a strategy that never fires.
+        """
+        t = self._mt5.terminal_info()
+        a = self._mt5.account_info()
+        return {
+            "terminal": getattr(t, "name", "?"),
+            "terminal_path": getattr(t, "path", "?"),
+            "connected": bool(getattr(t, "connected", False)),
+            "algo_allowed": bool(getattr(t, "trade_allowed", False)),
+            "login": getattr(a, "login", None),
+            "server": getattr(a, "server", "?"),
+            "company": getattr(a, "company", "?"),
+            "currency": getattr(a, "currency", "?"),
+            "balance": getattr(a, "balance", 0.0),
+            "equity": getattr(a, "equity", 0.0),
+            "leverage": getattr(a, "leverage", 0),
+            "trade_expert": bool(getattr(a, "trade_expert", False)),
+        }
+
+    def quote(self, symbol: str) -> tuple[float, float]:   # pragma: no cover
+        if not self._mt5.symbol_select(symbol, True):
+            raise KeyError(f"{symbol} is not available on this account")
+        tick = self._mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError(f"no live tick for {symbol}")
+        return float(tick.bid), float(tick.ask)
+
     def symbols(self) -> list[str]:                # pragma: no cover
         return sorted(s.name for s in self._mt5.symbols_get())
 

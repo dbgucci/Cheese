@@ -63,10 +63,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Running the survey. MetaTrader 5 must be open and logged in.
-echo       This pulls 90 days of 1-minute history for ten instruments and
-echo       takes a few minutes.
+echo [4/4] Checking the connection first...
 echo.
+python -m cheese_signals.markets.survey --check
+if errorlevel 1 goto :nomt5
+echo.
+echo Press a key to run the full 90-day survey, or close this window if the
+echo account above is not the one you meant to measure.
+pause >nul
+
 python -m cheese_signals.markets.survey --days 90 --out "%USERPROFILE%\Desktop\cost-wall-survey.txt"
 if errorlevel 1 (
     echo.
@@ -89,3 +94,23 @@ echo ============================================
 echo.
 pause
 exit /b 0
+
+:nomt5
+echo.
+echo Could not talk to MetaTrader 5.
+echo.
+echo Liquid Brokers does support MT5 - full licence, no MT4 - but it is
+echo often not switched on until you ask for it. Check, in order:
+echo.
+echo   1. MetaTrader 5 is open and logged in to your Liquid Brokers account.
+echo   2. You have MT5 credentials at all. In the client portal look under
+echo      account details for an MT5 login, password and server name. If
+echo      there is no MT5 section, email support@liquidbrokers.com and ask
+echo      them to enable MT5 access on your account.
+echo   3. You installed MT5 from Liquid Brokers' own site if possible -
+echo      their build has the correct server preset.
+echo   4. If you run more than one MT5, pass the exact one:
+echo        python -m cheese_signals.markets.survey --check --terminal "C:\Path\terminal64.exe"
+echo.
+pause
+exit /b 1
