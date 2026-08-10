@@ -18,8 +18,15 @@ APP_TAGLINE = "OTC · 1-MINUTE"
 APP_LONG_NAME = "KPS Signals"
 
 
-def render_mark(size: int = 256, with_text: bool = True) -> QPixmap:
-    """Draw the KPS mark at ``size`` pixels square."""
+def render_mark(size: int = 256, with_text: bool = True,
+                text: str = APP_NAME) -> QPixmap:
+    """Draw the mark at ``size`` pixels square.
+
+    ``text`` is the monogram. It is a parameter rather than a constant so the
+    autobot can have a visibly different taskbar icon while sharing this
+    drawing code -- two apps from the same repository with identical icons is
+    how a user ends up starting the wrong one.
+    """
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
 
@@ -53,7 +60,7 @@ def render_mark(size: int = 256, with_text: bool = True) -> QPixmap:
     if with_text:
         f = QFont()
         f.setFamily("Segoe UI")
-        f.setPointSizeF(max(1.0, 74 * s))
+        f.setPointSizeF(max(1.0, 74 * s * min(1.0, 3.0 / max(1, len(text)))))
         f.setBold(True)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3 * s)
         p.setFont(f)
@@ -61,27 +68,25 @@ def render_mark(size: int = 256, with_text: bool = True) -> QPixmap:
         p.drawText(
             QRectF(0, 42 * s, size, 78 * s),
             Qt.AlignmentFlag.AlignCenter,
-            APP_NAME,
+            text,
         )
     p.end()
     return pm
 
 
-def app_icon() -> QIcon:
+def app_icon(text: str = APP_NAME) -> QIcon:
     """Multi-resolution icon for the window and Windows taskbar."""
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
         # Below ~32px the monogram turns to mud; the candles alone stay legible.
-        icon.addPixmap(render_mark(size, with_text=size >= 32))
+        icon.addPixmap(render_mark(size, with_text=size >= 32, text=text))
     return icon
 
 
-def write_ico(path: str) -> str:
+def write_ico(path: str, text: str = APP_NAME) -> str:
     """Write a Windows .ico for PyInstaller to embed in the executable."""
-    from PySide6.QtGui import QImage
-
     sizes = [16, 24, 32, 48, 64, 128, 256]
-    images = [render_mark(s, with_text=s >= 32).toImage() for s in sizes]
+    images = [render_mark(s, with_text=s >= 32, text=text).toImage() for s in sizes]
 
     # Qt cannot write multi-image .ico, so build the container by hand.
     import struct

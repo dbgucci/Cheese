@@ -68,7 +68,10 @@ class LauncherSettings:
     risk_fraction: float = 0.005
     range_minutes: int = 15
     target_r: float = 2.0
+    breakeven_at_r: Optional[float] = 1.0
+    max_trades_per_session: int = 1
     max_daily_loss_fraction: float = 0.03
+    max_open_positions: int = 3
     poll_seconds: int = 20
     backtest_days: int = 180
     commission_points: float = 0.0
@@ -235,14 +238,23 @@ def format_plan(symbols: list[str], settings: LauncherSettings) -> list[str]:
 
 def build_config(settings: LauncherSettings, symbols: list[str],
                  live: bool) -> AutobotConfig:
+    """One place that turns the saved settings into a bot configuration.
+
+    Shared by the console launcher and the desktop window, so the two front
+    ends cannot drift into configuring different strategies from the same
+    settings file.
+    """
     return AutobotConfig(
         symbols=symbols,
         orb=orb.OrbConfig(range_minutes=settings.range_minutes,
-                          target_r=settings.target_r),
+                          target_r=settings.target_r,
+                          breakeven_at_r=settings.breakeven_at_r,
+                          max_trades_per_session=settings.max_trades_per_session),
         execution=ExecutionConfig(risk_fraction=settings.risk_fraction,
                                   dry_run=not live),
         guards=GuardConfig(
-            max_daily_loss_fraction=settings.max_daily_loss_fraction),
+            max_daily_loss_fraction=settings.max_daily_loss_fraction,
+            max_open_positions=settings.max_open_positions),
         poll_seconds=settings.poll_seconds,
     )
 
