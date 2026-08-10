@@ -53,7 +53,8 @@ included.
 - **A separate real-market autobot** (`markets/`) trades an opening range
   breakout on FX, gold, silver and the US index CFDs through MetaTrader 5,
   with the broker's own spreads charged in the backtest and a cost wall that
-  refuses instruments where the spread takes more than the move.
+  refuses instruments where the spread takes more than the move. Ships as its
+  own double-clickable `ORB-Autobot.exe`.
   [Details below](#real-markets-the-opening-range-autobot).
 
 ## Screenshots
@@ -311,37 +312,84 @@ only unit that survives a change of account size, instrument or leverage.
 Money follows once you pick a risk fraction, and the conversion is deliberately
 linear: compounding a backtest supplies the exponent from the assumption.
 
-### Running it
+### Getting `ORB-Autobot.exe`
 
-The MT5 Python package is Windows-only and attaches to a **running, logged-in
-terminal**. Point it at your broker's MT5 server; if your broker offers both a
-web platform and MT5 on the same account (Liquid Brokers, for instance), the
-bot trades the same balance and positions either front end shows.
+The autobot ships as its own standalone Windows executable, separate from
+`KPS.exe` — no Python, no command line.
+
+**Option A — download a prebuilt one.** Repo → **Actions** tab → **Build
+Autobot EXE** → *Run workflow*. When it finishes, download the
+`ORB-Autobot-windows` artifact; it contains `ORB-Autobot.exe` (~36 MB).
+
+**Option B — build it yourself on Windows.** Clone the repo and double-click
+`build_autobot_windows.bat`. It makes a virtualenv, installs everything
+including MetaTrader5, and produces `dist\ORB-Autobot.exe`.
+
+The build must run on Windows for two reasons: PyInstaller cannot
+cross-compile, and the `MetaTrader5` package is published for Windows only. It
+also has to be **installed at build time** — a frozen exe cannot load packages
+from the user's machine later, so a missing MetaTrader5 is missing forever, and
+the build script fails loudly rather than shipping an exe that cannot reach a
+broker.
+
+### Using it
+
+**Start MetaTrader 5 and log in first.** The exe attaches to a running
+terminal; it does not launch one. Then double-click `ORB-Autobot.exe`. It:
+
+1. writes `<Desktop>/KPS/autobot.json` on first run — plain JSON, edit it by
+   hand;
+2. offers you a choice if more than one broker's MT5 is installed, because the
+   Python package attaches to whichever terminal is running and would
+   otherwise pick one silently — which would mean pricing one broker and
+   trading another;
+3. prints which account it is connected to, whether algo trading is actually
+   enabled, which of your instruments exist and under what names, and today's
+   range and flat times in UTC;
+4. then shows a menu:
+
+```
+  1. Measure the cost wall          is there room for any strategy here?
+  2. Backtest the strategy          walk it forward over this broker's history
+  3. Watch it, place nothing        the full bot, orders printed not sent
+  4. Trade it for real              sends orders; asks you to confirm
+```
+
+Work down it in order. Option 4 states the account, balance and risk per trade
+and requires typing `trade live`. Everything else is a dry run, and the running
+log is written to `<Desktop>/KPS/logs/autobot.log`.
+
+If it cannot connect, it prints the four usual causes in likelihood order —
+terminal not running, not logged in, algo trading off, or **the broker does not
+offer MT5 at all** — and lists every MetaTrader install it found on the
+machine, by broker name. Note the fourth: if your account area shows no MT5
+login number and no server name, the broker is proprietary-only and nothing
+here can work around it. The bot needs an MT5 account somewhere.
+
+Passing any argument hands over to the full CLI instead of the menu:
+
+```
+ORB-Autobot.exe check
+ORB-Autobot.exe --symbols XAUUSD US30 backtest --days 180
+ORB-Autobot.exe run --risk 0.005 --live
+```
+
+From source (any OS for the backtester; Windows to reach a broker):
 
 ```bash
+pip install -e .
 pip install MetaTrader5          # Windows only
-
-# 0. Is this the right account, can it trade, and when does each session open?
-python -m cheese_signals.markets.autobot check
-
-# 1. Does any instrument clear the cost wall at all? (Do this before anything else.)
+orb-autobot                      # the same menu
 python -m cheese_signals.markets.survey --days 90
-
-# 2. Walk the rules forward over the broker's own history and real spreads.
-python -m cheese_signals.markets.autobot backtest --days 180 --commission 0
-
-# 3. Trade it. Dry run by default: nothing reaches the broker without --live,
-#    and --live requires typing a confirmation.
-python -m cheese_signals.markets.autobot run --risk 0.005
-python -m cheese_signals.markets.autobot run --risk 0.005 --live
+python -m cheese_signals.markets.autobot backtest --days 180
 ```
 
 **There are no live results in this README, and that is not an omission.** The
 backtest needs your broker's history and your broker's quoted spreads; numbers
-from a different broker's feed would describe a different strategy. Run step 1
-and step 2 and read the four-way comparison — if `inverted` matches
-`strategy`, or the edge only exists in `zero_cost`, the answer is no, and the
-tool has done its job.
+from a different broker's feed would describe a different strategy. Run the
+cost wall and the backtest, then read the four-way comparison — if `inverted`
+matches `strategy`, or the edge only exists in `zero_cost`, the answer is no,
+and the tool has done its job.
 
 ### The safety layer
 
@@ -587,12 +635,18 @@ src/cheese_signals/
     orb.py            the opening-range rules, as pure functions over bars
     orb_backtest.py   walk-forward simulation with the spread charged on both sides
     autobot.py        the live cycle, and the CLI (check / backtest / run)
+    launcher.py       the ORB-Autobot.exe front end: menu, settings, failure screens
     execution.py      order placement, sizing, stop distances, the spread gate
     guards.py         circuit breakers that no signal can override
     mt5_bridge.py     MT5Feed (read), MT5Trader (write), ReplayFeed (tests)
     survey.py         run the cost wall against a live account and report
 tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
+run_app.py            entry point for KPS.exe (the Pocket Option GUI)
+run_autobot.py        entry point for ORB-Autobot.exe
+packaging/
+  KPS.spec            PyInstaller build of the GUI app
+  Autobot.spec        PyInstaller build of the autobot
 ```
 
 ## Tests

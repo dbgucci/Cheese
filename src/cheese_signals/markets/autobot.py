@@ -35,9 +35,11 @@ algo trading are the ones that connect an untested bot to a funded account.
 from __future__ import annotations
 
 import argparse
+import sys
 import time as time_mod
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 import pandas as pd
@@ -579,8 +581,11 @@ def cmd_check(args, broker=None) -> int:             # pragma: no cover
 
 
 def main(argv: Optional[list[str]] = None) -> int:    # pragma: no cover
+    # Frozen into an exe, the module path is not something the user can type.
+    prog = (Path(sys.argv[0]).name if getattr(sys, "frozen", False)
+            else "python -m cheese_signals.markets.autobot")
     ap = argparse.ArgumentParser(
-        prog="python -m cheese_signals.markets.autobot",
+        prog=prog,
         description="Opening-range breakout autobot for FX, metals and index CFDs.")
     ap.add_argument("--login", type=int, default=None)
     ap.add_argument("--password", default="")

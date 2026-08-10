@@ -1,0 +1,65 @@
+name: Build Autobot EXE
+
+# Builds the standalone ORB-Autobot.exe on a Windows runner and uploads it as a
+# downloadable artifact. Run it from the Actions tab ("Run workflow").
+#
+# The runner has to be Windows for a reason beyond PyInstaller's inability to
+# cross-compile: the MetaTrader5 package is published for Windows only, so a
+# Linux build would produce a binary missing the one thing it exists to do.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["autobot-v*"]
+    branches: ["claude/autobot-orb-strategy-trader-w37cot"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+          # Must be present at build time: a frozen exe cannot load packages
+          # from the user's machine afterwards, so a MetaTrader5 missing here
+          # is missing in the finished exe forever.
+          pip install MetaTrader5
+
+      - name: Confirm MetaTrader5 is importable
+        # Fail here rather than shipping an exe that builds cleanly and then
+        # cannot reach a broker, which is a much more expensive way to find out.
+        run: python -c "import MetaTrader5; print('MetaTrader5', MetaTrader5.__version__)"
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          pytest -q tests/test_markets_orb.py tests/test_markets_orb_backtest.py tests/test_markets_autobot.py tests/test_markets_clock.py tests/test_markets_launcher.py tests/test_markets_costs.py tests/test_markets_execution.py tests/test_markets_guards.py tests/test_markets_survey.py
+
+      - name: Build executable
+        run: pyinstaller packaging/Autobot.spec --noconfirm
+
+      - name: Show build output
+        run: dir dist
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORB-Autobot-windows
+          path: dist/ORB-Autobot.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/autobot-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ORB-Autobot.exe

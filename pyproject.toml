@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 cheese-signals = "cheese_signals.bot:main"
+orb-autobot = "cheese_signals.markets.launcher:main"
 
 [project.gui-scripts]
 cheese-signals-app = "cheese_signals.gui:main"
