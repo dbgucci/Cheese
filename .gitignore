@@ -16,3 +16,13 @@ settings.json
 
 # Generated at build time by the PyInstaller spec
 packaging/kps.ico
+
+# JS overlay: node deps are installed on demand.
+web/qt-orb/node_modules/
+web/qt-orb/package-lock.json
+
+# The bundle is committed on purpose, against the blanket dist/ rule above: it
+# is the single file a user pastes into the trading page, and telling them to
+# install node and run a build first defeats the point of shipping it.
+!web/qt-orb/dist/
+!web/qt-orb/dist/orb-overlay.js

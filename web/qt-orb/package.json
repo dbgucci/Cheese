@@ -1,0 +1,13 @@
+{
+  "name": "qt-orb-overlay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opening range breakout overlay for browser-based trading platforms",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node build.js && node --test 'test/*.test.js'"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}
