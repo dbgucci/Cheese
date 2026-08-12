@@ -42,14 +42,17 @@ jobs:
         run: pyinstaller packaging/Signals.spec --noconfirm
 
       - name: Confirm the build contains no order path
-        # The safety claim is meant to be a property of the binary, not a
-        # promise: the trading modules are excluded in the spec, so their
-        # absence is worth asserting rather than assuming.
-        shell: pwsh
-        run: |
-          $hits = Select-String -Path dist\ORB-Signals.exe -Pattern 'order_send' -Encoding Byte -ErrorAction SilentlyContinue
-          if ($hits) { Write-Error "the signals build contains order_send"; exit 1 }
-          Write-Host "no order_send in the binary"
+        # The safety claim is a property of the binary, not a promise. This
+        # already earned its keep: it failed the first build, correctly, because
+        # MT5Trader shared a module with the feed the app needs and was shipped
+        # despite the exclusions. Splitting the modules is what fixed it.
+        run: >-
+          python -c "import sys;
+          data = open('dist/ORB-Signals.exe','rb').read();
+          needles = [b'order_send', b'TRADE_ACTION_DEAL'];
+          found = [n.decode() for n in needles if n in data];
+          print('order-placing symbols found:', found or 'none');
+          sys.exit(1 if found else 0)"
 
       - name: Show build output
         run: dir dist

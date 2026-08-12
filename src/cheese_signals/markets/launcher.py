@@ -150,7 +150,7 @@ def connect(settings: LauncherSettings, password: str = ""):
     somebody who has not read any of this code.
     """
     try:
-        from .mt5_bridge import MT5Trader
+        from .mt5_trader import MT5Trader
     except ImportError as exc:        # pragma: no cover - import is unconditional
         return None, str(exc)
 

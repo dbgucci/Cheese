@@ -478,7 +478,8 @@ def _resolve(broker, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
 
 def cmd_backtest(args, broker=None) -> int:          # pragma: no cover
     from . import orb_backtest as bt
-    from .mt5_bridge import MT5Trader, fetch_all
+    from .mt5_bridge import fetch_all
+    from .mt5_trader import MT5Trader
 
     broker = broker or MT5Trader(login=args.login, password=args.password,
                                  server=args.server, terminal_path=args.terminal)
@@ -513,7 +514,7 @@ def cmd_backtest(args, broker=None) -> int:          # pragma: no cover
 
 
 def cmd_run(args, broker=None) -> int:               # pragma: no cover
-    from .mt5_bridge import MT5Trader
+    from .mt5_trader import MT5Trader
 
     broker = broker or MT5Trader(login=args.login, password=args.password,
                                  server=args.server, terminal_path=args.terminal)
@@ -551,7 +552,7 @@ def cmd_run(args, broker=None) -> int:               # pragma: no cover
 
 
 def cmd_check(args, broker=None) -> int:             # pragma: no cover
-    from .mt5_bridge import MT5Trader
+    from .mt5_trader import MT5Trader
     from .survey import check
 
     broker = broker or MT5Trader(login=args.login, password=args.password,

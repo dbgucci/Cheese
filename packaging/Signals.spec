@@ -66,6 +66,7 @@ a = Analysis(
         "matplotlib",
         "BinaryOptionsToolsV2",
         "cheese_signals.markets.autobot",
+        "cheese_signals.markets.mt5_trader",
         "cheese_signals.markets.launcher",
         "cheese_signals.markets.orb_backtest",
         "cheese_signals.gui.autobot_app",

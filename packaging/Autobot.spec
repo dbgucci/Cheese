@@ -66,6 +66,7 @@ a = Analysis(
         "cheese_signals.markets.execution",
         "cheese_signals.markets.guards",
         "cheese_signals.markets.mt5_bridge",
+        "cheese_signals.markets.mt5_trader",
         "cheese_signals.markets.orb",
         "cheese_signals.markets.orb_backtest",
         "cheese_signals.markets.survey",
