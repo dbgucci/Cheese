@@ -1,3 +1,3 @@
-from .telegram import TelegramNotifier
+from .telegram import TelegramNotifier, discover_chat_ids
 
-__all__ = ["TelegramNotifier"]
+__all__ = ["TelegramNotifier", "discover_chat_ids"]

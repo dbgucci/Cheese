@@ -140,3 +140,51 @@ class TelegramNotifier:
             f"{wins}W / {losses}L — win rate *{wr:.1%}*\n"
             f"Break-even needed: {be:.1%} ({verdict} break-even)"
         )
+
+
+def discover_chat_ids(bot_token: str, timeout: int = 10) -> tuple[list[dict], str]:
+    """Chat IDs that have recently messaged this bot.
+
+    Finding a chat ID is the step that stops people setting Telegram up: the
+    number is nowhere in the Telegram interface, and the usual instructions send
+    you to a third-party bot to fetch it. It is available from the bot's own
+    ``getUpdates``, so the app can just look it up -- provided the user has sent
+    the bot one message first, which is the one thing that cannot be automated
+    because Telegram will not let a bot open a conversation.
+
+    Returns ``(chats, error)``: a list of ``{"id", "name"}`` and an empty error,
+    or an empty list and a reason.
+    """
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    try:
+        resp = requests.get(url, timeout=timeout)
+    except requests.RequestException as exc:
+        return [], str(exc)
+    if resp.status_code == 404:
+        return [], "that bot token was rejected by Telegram (404)"
+    if resp.status_code != 200:
+        return [], f"HTTP {resp.status_code}: {resp.text[:200]}"
+    try:
+        payload = resp.json()
+    except ValueError:
+        return [], "Telegram returned something that was not JSON"
+    if not payload.get("ok"):
+        return [], str(payload.get("description") or "Telegram rejected the request")
+
+    seen: dict[str, dict] = {}
+    for update in payload.get("result") or []:
+        # A chat can arrive under several update kinds; the shape is the same.
+        for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+            chat = (update.get(key) or {}).get("chat")
+            if not chat:
+                continue
+            chat_id = str(chat.get("id"))
+            name = (chat.get("title") or " ".join(
+                filter(None, [chat.get("first_name"), chat.get("last_name")]))
+                or chat.get("username") or "chat")
+            seen[chat_id] = {"id": chat_id, "name": name}
+    if not seen:
+        return [], ("no messages found. Open Telegram, send your bot any message "
+                    "(even 'hi'), then press this again -- a bot cannot start a "
+                    "conversation, so it has nothing to read until you do.")
+    return list(seen.values()), ""

@@ -347,15 +347,31 @@ Spread  25 pts  (range is 24.0x it)
 08:17 UTC  ·  London open 08:00  ·  flat by 16:20
 ```
 
-Run it against a logged-in MT5 terminal (read-only — it never places an order):
+**Get `ORB-Signals.exe`:** repo → **Actions** → **Build Signals EXE** → *Run
+workflow*, then download the `ORB-Signals-windows` artifact. Or build it on
+Windows by double-clicking `build_signals_app_windows.bat`.
+
+It is a normal windowed app — same dark interface as KPS — with three pages:
+
+- **Signals** — connection, today's alerts, and what every instrument is doing
+  (range forming, watching, broke at 14:45, retested). "No alerts yet" and "not
+  working" are distinguishable, which they are not in a console.
+- **Settings** — instruments, range length, target, retest tolerance, and
+  **Telegram set up in the window**: paste the bot token, press **Find my chat
+  ID**, press **Send test message**. No environment variables.
+- **Activity** — every reason it gave for not alerting.
+
+Start MetaTrader 5 and log in first; the app reads prices from it. It uses
+`MT5Feed`, which has no order methods at all, so there is no code path from this
+app to a trade — the build even excludes the trading modules and CI asserts the
+binary contains no `order_send`.
+
+There is also a console version if you prefer it:
 
 ```bash
 python -m cheese_signals.markets.signals
 python -m cheese_signals.markets.signals --symbols XAUUSD NAS100 --no-filters
 ```
-
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to get the alerts on your phone;
-without them they print to the console.
 
 ### Getting `ORB-Autobot.exe`
 
