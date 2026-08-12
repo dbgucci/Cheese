@@ -312,6 +312,51 @@ only unit that survives a change of account size, instrument or leverage.
 Money follows once you pick a risk fraction, and the conversion is deliberately
 linear: compounding a backtest supplies the exponent from the assumption.
 
+### Signals only: break, then retest
+
+If you want alerts rather than an autotrader, `markets/signals.py` sends them and
+places nothing. There is no code path from it to an order, so it needs no
+algo-trading permission and cannot cost anything if it is wrong.
+
+Per instrument, per day, it watches for three things:
+
+1. **The range** — high and low of the first 15 minutes after that market's own
+   open (09:30 New York for the US indices, 08:00 London for gold, silver and FX).
+2. **BREAK** — a bar *closes* beyond the high or the low. First alert.
+3. **RETEST** — price comes back to the level it broke and holds it: a bar trades
+   to the level but still closes on the breakout side. Second alert, and usually
+   the better entry.
+
+A break that closes back *inside* the range has failed, and is marked dead rather
+than left waiting. Treating a failed break as "still pending" is how a retest
+alert lands at the start of a reversal.
+
+Each alert carries entry, stop, target, the range, and how the range compares to
+the spread — the last being what decides whether the trade can pay for itself:
+
+```
+RETEST  XAUUSD  BUY
+
+Entry   3402.00
+Stop    3396.00   (600 pts)
+Target  3414.00   (1200 pts)
+
+Range   3396.00 - 3402.00  (600 pts)
+Spread  25 pts  (range is 24.0x it)
+
+08:17 UTC  ·  London open 08:00  ·  flat by 16:20
+```
+
+Run it against a logged-in MT5 terminal (read-only — it never places an order):
+
+```bash
+python -m cheese_signals.markets.signals
+python -m cheese_signals.markets.signals --symbols XAUUSD NAS100 --no-filters
+```
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to get the alerts on your phone;
+without them they print to the console.
+
 ### Getting `ORB-Autobot.exe`
 
 The autobot ships as its own standalone Windows executable, separate from
@@ -634,6 +679,7 @@ src/cheese_signals/
     clock.py          DST-correct session opens, and the broker's server offset
     orb.py            the opening-range rules, as pure functions over bars
     orb_backtest.py   walk-forward simulation with the spread charged on both sides
+    signals.py        break/retest alerts -- sends signals, places nothing
     autobot.py        the live cycle, and the CLI (check / backtest / run)
     launcher.py       the ORB-Autobot.exe front end: menu, settings, failure screens
     execution.py      order placement, sizing, stop distances, the spread gate

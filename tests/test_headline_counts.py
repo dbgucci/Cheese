@@ -131,7 +131,14 @@ def app():
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    pytest.importorskip("PySide6")
+    # PySide6 can be installed and still unimportable: on a headless machine its
+    # Qt libraries (libEGL) are often absent, which raises a plain ImportError.
+    # pytest.importorskip only skips on ModuleNotFoundError, so it re-raises that
+    # and fails collection instead of skipping.
+    try:
+        import PySide6.QtWidgets  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"PySide6 is unusable here: {exc}")
     from PySide6.QtWidgets import QApplication
 
     return QApplication.instance() or QApplication([])

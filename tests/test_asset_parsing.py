@@ -154,7 +154,14 @@ def test_the_pairs_box_survives_a_save_reopen_save_cycle():
     then split on newlines and produced a single symbol made of every pair.
     Nothing about the user's input was wrong -- the round-trip broke it.
     """
-    pytest.importorskip("PySide6")
+    # PySide6 can be installed and still unimportable: on a headless machine its
+    # Qt libraries (libEGL) are often absent, which raises a plain ImportError.
+    # pytest.importorskip only skips on ModuleNotFoundError, so it re-raises that
+    # and fails collection instead of skipping.
+    try:
+        import PySide6.QtWidgets  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"PySide6 is unusable here: {exc}")
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -174,7 +181,14 @@ def test_the_pairs_box_survives_a_save_reopen_save_cycle():
 
 
 def test_the_settings_page_writes_pairs_one_per_line():
-    pytest.importorskip("PySide6")
+    # PySide6 can be installed and still unimportable: on a headless machine its
+    # Qt libraries (libEGL) are often absent, which raises a plain ImportError.
+    # pytest.importorskip only skips on ModuleNotFoundError, so it re-raises that
+    # and fails collection instead of skipping.
+    try:
+        import PySide6.QtWidgets  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"PySide6 is unusable here: {exc}")
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

@@ -18,10 +18,15 @@ import time
 
 import pytest
 
-pytest.importorskip("PySide6")
-
-from PySide6.QtCore import QAbstractTableModel  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
+# PySide6 can be installed and still unimportable: on a headless machine its Qt
+# libraries (libEGL) are often absent, which raises a plain ImportError rather
+# than ModuleNotFoundError -- and pytest.importorskip only skips on the latter,
+# so it fails collection instead of skipping the module.
+try:
+    from PySide6.QtCore import QAbstractTableModel
+    from PySide6.QtWidgets import QApplication, QHeaderView
+except ImportError as exc:  # pragma: no cover - environment dependent
+    pytest.skip(f"PySide6 is unusable here: {exc}", allow_module_level=True)
 
 from cheese_signals.gui import models  # noqa: E402
 

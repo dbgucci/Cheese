@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 
 import pandas as pd
 
@@ -515,7 +515,7 @@ def entry_deadline(rng: OpeningRange, cfg: OrbConfig, spec: SessionSpec) -> date
 def breakout(
     rng: OpeningRange,
     bar_ts: datetime,
-    bar: pd.Series,
+    bar: Mapping[str, float],
     cfg: OrbConfig,
     taken: Iterable[int] = (),
     atr_points: float = 0.0,
@@ -575,6 +575,49 @@ def breakout(
                 f"{rng.start:%H:%M} UTC)"),
         range_=rng,
     )
+
+
+def broken_level(rng: OpeningRange, direction: int) -> float:
+    """The level a break in ``direction`` went through, and must hold."""
+    return rng.high if direction == BUY else rng.low
+
+
+def is_retest(rng: OpeningRange, direction: int, bar: Mapping[str, float],
+              tolerance_fraction: float = 0.10) -> bool:
+    """Did price come back to the broken level and hold it on this bar.
+
+    Two conditions, and both matter:
+
+    * price *returned* to the level -- within a tolerance, because a retest that
+      stops a tick short is still a retest, and demanding an exact touch means
+      most of them are never detected;
+    * the bar *closed on the breakout side* of the level. A bar that came back
+      and closed through it is not a retest, it is the break failing, and
+      calling that a retest is how a "buy the retest" rule ends up buying the
+      start of a reversal.
+
+    The tolerance is a fraction of the range width rather than a fixed number of
+    points, so one setting means the same thing on gold and on EURUSD.
+    """
+    level = broken_level(rng, direction)
+    slack = rng.width * tolerance_fraction
+    close = float(bar["close"])
+    if direction == BUY:
+        return float(bar["low"]) <= level + slack and close > level
+    return float(bar["high"]) >= level - slack and close < level
+
+
+def break_failed(rng: OpeningRange, direction: int,
+                 bar: Mapping[str, float]) -> bool:
+    """Has this bar closed back inside the range, cancelling the break.
+
+    Distinct from "not yet retested": a break that closes back inside is over,
+    and continuing to wait for its retest means waiting for an event that can no
+    longer mean what it meant.
+    """
+    level = broken_level(rng, direction)
+    close = float(bar["close"])
+    return close <= level if direction == BUY else close >= level
 
 
 def breakeven_stop(plan: TradePlan, cfg: OrbConfig) -> Optional[float]:
