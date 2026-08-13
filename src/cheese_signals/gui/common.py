@@ -12,9 +12,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -113,20 +115,83 @@ def cell(text: str, colour: str | None = None, mono: bool = False) -> QTableWidg
     return item
 
 
-def labelled(text: str, widget, label_width: int = 300,
-             control_width: int = 260) -> QHBoxLayout:
-    """A settings row: description on the left, control on the right."""
-    row = QHBoxLayout()
-    row.setSpacing(12)
+def form_grid() -> QGridLayout:
+    """A two-column grid for settings rows: label left, control right.
+
+    A grid rather than one QHBoxLayout per row, which is what this page had
+    first and what made it unreadable. Independent rows cannot agree on a column
+    position, so every control floated to wherever its own label happened to
+    end -- and a stretched label pushed each one to the far edge of a wide
+    window, a screen's width from the text describing it.
+
+    Neither column stretches; a third, empty column takes the slack. Giving the
+    label column the stretch instead lets the controls -- which contain
+    expanding line edits -- claim the surplus on a wide monitor, which squeezes
+    the labels back down to their wrap width.
+    """
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(24)
+    grid.setVerticalSpacing(12)
+    grid.setColumnMinimumWidth(0, 430)
+    grid.setColumnMinimumWidth(1, 380)
+    grid.setColumnStretch(0, 0)
+    grid.setColumnStretch(1, 0)
+    grid.setColumnStretch(2, 1)
+    return grid
+
+
+def form_row(grid: QGridLayout, row: int, text: str, widget,
+             hint: str = "") -> int:
+    """Add one label/control row. Returns the next free row index."""
+    label = QLabel(text)
+    # No word wrap: the column is wide enough for these, and a wrapped label in
+    # a grid reports a height the grid does not honour, which is where the
+    # clipped single lines came from.
+    label.setWordWrap(False)
+    label.setMinimumHeight(26)
+    if hint:
+        label.setToolTip(hint)
+        if not isinstance(widget, (QHBoxLayout, QVBoxLayout)):
+            widget.setToolTip(hint)
+    grid.addWidget(label, row, 0, Qt.AlignmentFlag.AlignLeft
+                   | Qt.AlignmentFlag.AlignVCenter)
+    if isinstance(widget, (QHBoxLayout, QVBoxLayout)):
+        grid.addLayout(widget, row, 1)
+    else:
+        grid.addWidget(widget, row, 1)
+    return row + 1
+
+
+def form_note(grid: QGridLayout, row: int, text: str) -> int:
+    """A wrapped explanation spanning both columns.
+
+    Given an explicit minimum height because a wrapped QLabel does not propagate
+    its height through a grid: without it, several lines of instructions collapse
+    into one clipped line the moment the page is taller than the window.
+    """
     label = QLabel(text)
     label.setObjectName("Hint")
-    label.setMinimumWidth(label_width)
     label.setWordWrap(True)
-    row.addWidget(label, 1)
-    if isinstance(widget, (QHBoxLayout, QVBoxLayout)):
-        row.addLayout(widget, 1)
-    else:
-        if control_width:
-            widget.setFixedWidth(control_width)
-        row.addWidget(widget, 0)
-    return row
+    # 21px per line, not the font's own leading: at 18 the numbered Telegram
+    # steps rendered as a solid block with the descenders nearly touching the
+    # next line.
+    label.setMinimumHeight(21 * (text.count("\n") + 1))
+    label.setAlignment(Qt.AlignmentFlag.AlignTop)
+    grid.addWidget(label, row, 0, 1, 2)
+    return row + 1
+
+
+def scroll_host(inner: QWidget) -> QScrollArea:
+    """Put a page inside a scroll area.
+
+    Not optional for a settings page. Without it, content taller than the window
+    is not scrolled but *compressed*: Qt shrinks every widget to fit, which clips
+    multi-line labels to a single cut-off line and squashes spin boxes and
+    buttons into slivers. It looks like broken styling and is actually a missing
+    scroll area.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setWidget(inner)
+    return area

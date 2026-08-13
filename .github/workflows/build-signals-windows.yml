@@ -36,7 +36,18 @@ jobs:
       - name: Run tests
         run: |
           pip install pytest
-          pytest -q tests/test_markets_signals.py tests/test_markets_signal_settings.py tests/test_markets_orb.py tests/test_markets_clock.py
+          pytest -q tests/test_markets_signals.py tests/test_markets_signal_settings.py tests/test_markets_orb.py tests/test_markets_clock.py tests/test_gui_signals_layout.py
+
+      - name: Render the pages to PNGs
+        # The first build's Settings page was unusable and every test passed: a
+        # missing scroll area, controls at the far right edge, a clipped brand
+        # mark. tests/test_gui_signals_layout now asserts those specific
+        # properties, but a test only catches a defect someone thought of first.
+        # Shipping pictures with each build means the next one is visible without
+        # a Windows machine or an install.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/render_signals_pages.py screenshots
 
       - name: Build executable
         run: pyinstaller packaging/Signals.spec --noconfirm
@@ -63,6 +74,15 @@ jobs:
           name: ORB-Signals-windows
           path: dist/ORB-Signals.exe
           if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload page screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORB-Signals-screenshots
+          path: screenshots/*.png
+          if-no-files-found: warn
           retention-days: 90
 
       - name: Attach to release

@@ -55,7 +55,8 @@ from ..markets.execution import BUY
 from ..markets.signal_settings import SignalSettings, settings_path
 from . import theme
 from .branding import app_icon
-from .common import card, cell, labelled, page_header, page_layout, table
+from .common import (card, cell, form_grid, form_note, form_row,
+                     page_header, page_layout, scroll_host, table)
 from .icons import icon as nav_icon
 from .widgets import StatStrip, StatTile, StatusDot, hairline
 
@@ -310,7 +311,9 @@ class FeedPage(QWidget):
         state_card, state_lay = card("What each instrument is doing")
         self.state_table = table(
             ["Instrument", "Range window", "Range", "State", "Why"], stretch=4,
-            widths={0: 110, 1: 120, 2: 90, 3: 120})
+            # 120 elided "Range window" to "!ange windov": QTableWidget centres
+            # header text, so a header needs more width than its label alone.
+            widths={0: 120, 1: 160, 2: 100, 3: 130})
         self.state_table.setMinimumHeight(170)
         state_lay.addWidget(self.state_table)
         root.addWidget(state_card, 1)
@@ -344,37 +347,69 @@ class FeedPage(QWidget):
 
 
 class SettingsPage(QWidget):
+    """Everything editable, in a scroll area, laid out on a two-column grid.
+
+    Both of those are load-bearing and were missing in the first version. A page
+    taller than the window without a scroll area is not scrollable, it is
+    *compressed* -- Qt shrinks each widget to fit, clipping the four-line
+    Telegram instructions to one cut-off line and reducing every spin box and
+    button to a sliver. And a per-row QHBoxLayout gives each row its own idea of
+    where the control column starts, so on a wide screen the controls end up at
+    the far right edge, a screen's width from their labels.
+    """
+
     def __init__(self, window: "SignalsWindow"):
         super().__init__()
         self.window = window
         s = window.settings
-        root = page_layout(self)
 
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        head = QWidget()
+        head_lay = QVBoxLayout(head)
+        head_lay.setContentsMargins(theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_TOP,
+                                    theme.PAGE_MARGIN_H, 0)
         save = QPushButton("Save")
         save.setObjectName("Primary")
         save.clicked.connect(self.save)
         reveal = QPushButton("Open settings folder")
         reveal.setObjectName("Ghost")
         reveal.clicked.connect(window.open_data_folder)
-
-        root.addLayout(page_header(
+        head_lay.addLayout(page_header(
             "Settings",
             f"Saved to {settings_path()}. Changes apply the next time you press "
             f"Start watching.", [reveal, save]))
+        outer.addWidget(head)
+
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(theme.PAGE_MARGIN_H, theme.GAP,
+                                theme.PAGE_MARGIN_H, theme.PAGE_MARGIN_BOTTOM)
+        root.setSpacing(theme.GAP_LG)
 
         # ---------------------------------------------------------- telegram
         tg_card, tg_lay = card("Telegram alerts")
-        tg_lay.addWidget(self._hint(
-            "1. In Telegram, message @BotFather and send /newbot. It replies with "
-            "a token.\n"
-            "2. Paste the token below.\n"
-            "3. Open your new bot and send it any message — a bot cannot start a "
-            "conversation, so it has nothing to read until you do.\n"
-            "4. Press Find my chat ID."))
+        grid = form_grid()
+        # One row per step rather than one label with newlines in it: a QLabel
+        # sets its own line spacing from the font, which packed four numbered
+        # steps into a block with the descenders almost touching. Separate rows
+        # get the grid's row spacing between them and are legible as a list.
+        r = 0
+        for step in ("1. In Telegram, message @BotFather and send /newbot. It "
+                     "replies with a token.",
+                     "2. Paste the token below.",
+                     "3. Open your new bot and send it any message — a bot cannot "
+                     "start a conversation, so it has nothing to read until you do.",
+                     "4. Press Find my chat ID."):
+            r = form_note(grid, r, step)
+        grid.setRowMinimumHeight(r, 10)
+        r += 1
 
         self.tg_enabled = QCheckBox()
         self.tg_enabled.setChecked(s.telegram_enabled)
-        tg_lay.addLayout(labelled("Send alerts to Telegram", self.tg_enabled))
+        r = form_row(grid, r, "Send alerts to Telegram", self.tg_enabled)
 
         self.tg_token = QLineEdit(s.telegram_token)
         self.tg_token.setPlaceholderText("123456789:AAE...")
@@ -383,9 +418,10 @@ class SettingsPage(QWidget):
         show.toggled.connect(lambda on: self.tg_token.setEchoMode(
             QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
         token_row = QHBoxLayout()
+        token_row.setSpacing(8)
         token_row.addWidget(self.tg_token, 1)
         token_row.addWidget(show)
-        tg_lay.addLayout(labelled("Bot token", token_row))
+        r = form_row(grid, r, "Bot token", token_row)
 
         self.tg_chat = QLineEdit(s.telegram_chat_id)
         self.tg_chat.setPlaceholderText("e.g. 987654321")
@@ -393,57 +429,68 @@ class SettingsPage(QWidget):
         find.setObjectName("Ghost")
         find.clicked.connect(self.find_chat_id)
         chat_row = QHBoxLayout()
+        chat_row.setSpacing(8)
         chat_row.addWidget(self.tg_chat, 1)
         chat_row.addWidget(find)
-        tg_lay.addLayout(labelled("Chat ID", chat_row))
+        r = form_row(grid, r, "Chat ID", chat_row)
 
         test = QPushButton("Send test message")
         test.setObjectName("Ghost")
         test.clicked.connect(self.send_test)
-        tg_lay.addLayout(labelled("Check it works", test))
+        test_row = QHBoxLayout()
+        test_row.addWidget(test)
+        test_row.addStretch(1)
+        r = form_row(grid, r, "Check it works", test_row)
 
         self.alert_break = QCheckBox()
         self.alert_break.setChecked(s.alert_on_break)
-        tg_lay.addLayout(labelled("Alert on the break", self.alert_break))
+        r = form_row(grid, r, "Alert on the break", self.alert_break)
         self.alert_retest = QCheckBox()
         self.alert_retest.setChecked(s.alert_on_retest)
-        tg_lay.addLayout(labelled("Alert on the retest", self.alert_retest))
+        r = form_row(grid, r, "Alert on the retest", self.alert_retest)
+        tg_lay.addLayout(grid)
         root.addWidget(tg_card)
 
         # ---------------------------------------------------------- strategy
         st_card, st_lay = card("Strategy")
+        grid = form_grid()
+        r = 0
         self.range_minutes = QSpinBox()
         self.range_minutes.setRange(1, 240)
         self.range_minutes.setValue(s.range_minutes)
         self.range_minutes.setSuffix(" min")
-        st_lay.addLayout(labelled("Opening range length", self.range_minutes))
+        r = form_row(grid, r, "Opening range length", self.range_minutes,
+                     "The high and low of this many minutes after each market's open.")
 
         self.target_r = QDoubleSpinBox()
         self.target_r.setRange(0.25, 10.0)
         self.target_r.setSingleStep(0.25)
         self.target_r.setValue(s.target_r)
         self.target_r.setSuffix(" R")
-        st_lay.addLayout(labelled("Target, in multiples of the stop", self.target_r))
+        r = form_row(grid, r, "Target, in multiples of the stop", self.target_r)
 
         self.tolerance = QDoubleSpinBox()
         self.tolerance.setRange(0.0, 100.0)
         self.tolerance.setSingleStep(1.0)
         self.tolerance.setValue(s.retest_tolerance_fraction * 100)
         self.tolerance.setSuffix(" % of the range")
-        st_lay.addLayout(labelled(
-            "How close a pullback counts as a retest", self.tolerance))
+        r = form_row(grid, r, "How close a pullback counts as a retest",
+                     self.tolerance,
+                     "A pullback stopping a few points short of the level is still "
+                     "a retest; demanding an exact touch misses most of them.")
 
         self.window_minutes = QSpinBox()
         self.window_minutes.setRange(10, 600)
         self.window_minutes.setValue(s.entry_window_minutes)
         self.window_minutes.setSuffix(" min")
-        st_lay.addLayout(labelled(
-            "Stop looking for a break this long after the range", self.window_minutes))
+        r = form_row(grid, r, "Stop looking for a break this long after the range",
+                     self.window_minutes)
 
         self.filters = QCheckBox()
         self.filters.setChecked(s.apply_filters)
-        st_lay.addLayout(labelled(
-            "Skip days whose range is too narrow to beat the spread", self.filters))
+        r = form_row(grid, r, "Skip days whose range is too narrow to beat the spread",
+                     self.filters)
+        st_lay.addLayout(grid)
         root.addWidget(st_card)
 
         # -------------------------------------------------------- instruments
@@ -453,7 +500,7 @@ class SettingsPage(QWidget):
             "are matched automatically, so XAUUSD finds XAUUSD247 or XAUUSD.r."))
         self.symbols = QTextEdit()
         self.symbols.setPlainText("\n".join(s.symbols))
-        self.symbols.setFixedHeight(150)
+        self.symbols.setMinimumHeight(170)
         self.symbols.setStyleSheet(f"font-family: {theme.MONO_STACK};")
         sym_lay.addWidget(self.symbols)
         root.addWidget(sym_card)
@@ -463,23 +510,29 @@ class SettingsPage(QWidget):
         conn_lay.addWidget(self._hint(
             "Used for price history. This app reads prices and cannot place, "
             "change or close a trade, so it needs no algo-trading permission."))
+        grid = form_grid()
         self.terminal = QLineEdit(s.terminal_path or "")
         self.terminal.setPlaceholderText("Leave empty to use whichever MT5 is running")
         browse = QPushButton("Browse...")
         browse.setObjectName("Ghost")
         browse.clicked.connect(self._browse)
         term_row = QHBoxLayout()
+        term_row.setSpacing(8)
         term_row.addWidget(self.terminal, 1)
         term_row.addWidget(browse)
-        conn_lay.addLayout(labelled("Terminal", term_row))
+        form_row(grid, 0, "Terminal", term_row)
+        conn_lay.addLayout(grid)
         root.addWidget(conn_card)
         root.addStretch(1)
+
+        outer.addWidget(scroll_host(body), 1)
 
     @staticmethod
     def _hint(text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("Hint")
         label.setWordWrap(True)
+        label.setMinimumHeight(20 * (text.count("\n") + 1))
         return label
 
     def _browse(self) -> None:
@@ -641,7 +694,9 @@ class SignalsWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("Sidebar")
-        bar.setFixedWidth(232)
+        # 232 clipped "ORB Signals" to "ORB Signal" -- the brand mark is
+        # letter-spaced, so it needs more room than its character count suggests.
+        bar.setFixedWidth(252)
         lay = QVBoxLayout(bar)
         lay.setContentsMargins(14, 30, 14, 20)
         lay.setSpacing(2)
