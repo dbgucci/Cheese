@@ -44,11 +44,11 @@ if errorlevel 1 (
 echo.
 echo [3/3] Running the analysis...
 echo.
-echo This reads every candle in your journal. Expect it to take a few
-echo minutes if the bots have been running for a while.
+echo Searching your Desktop folders for every bot's candle data, then
+echo analysing all of it together. Expect this to take several minutes.
 echo.
 
-python run_research.py --payout 0.92 --out "%USERPROFILE%\Desktop\otc-research-report.txt"
+python run_research.py --auto --payout 0.92 --out "%USERPROFILE%\Desktop\otc-research-report.txt"
 if errorlevel 1 (
     echo.
     echo The analysis did not complete. The output above says why.
@@ -61,15 +61,19 @@ echo ============================================
 echo   Saved to your Desktop as otc-research-report.txt
 echo ============================================
 echo.
-echo Read STEP 1 first. If the feeds show no departure from a random walk,
-echo the pattern tables below it are noise and should be read as such.
+echo Read it in this order:
 echo.
-echo If you have candle history from elsewhere as CSV files, put them in a
-echo folder and include them:
-echo   python run_research.py --csv-dir "C:\path\to\csvs"
+echo   1. DATA INVENTORY - check the "Sources NOT used" list. Anything in
+echo      there that you believe IS candle data means we are analysing less
+echo      than you think.
+echo.
+echo   2. STEP 1 - if a feed shows no departure from a random walk, the
+echo      pattern tables below it are noise and should be read as such.
+echo.
+echo   3. STEP 2 - only rules marked CONFIRMED OUT OF SAMPLE mean anything.
 echo.
 echo Set your real payout if it is not 92 percent:
-echo   python run_research.py --payout 0.80
+echo   python run_research.py --auto --payout 0.80
 echo.
 pause
 exit /b 0

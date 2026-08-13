@@ -34,14 +34,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--db",
         type=Path,
+        nargs="*",
         default=None,
-        help="Path to signals.db (default: the app's Desktop/KPS folder).",
+        help=(
+            "One or more SQLite files holding candles. Default: the app's "
+            "Desktop/KPS journal. Other bots' databases can be listed too -- "
+            "any table with open/high/low/close columns is read."
+        ),
     )
     parser.add_argument(
         "--csv-dir",
         type=Path,
+        nargs="*",
         default=None,
-        help="Directory of CSV candle exports to include alongside the journal.",
+        help=(
+            "One or more directories of CSV candle exports, searched "
+            "recursively. Non-candle CSVs are listed as skipped, not "
+            "silently ignored."
+        ),
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "Search your Desktop folders for every database and CSV that "
+            "holds candles, and analyse all of them. Use this when the "
+            "history is spread across several bots' data folders."
+        ),
     )
     parser.add_argument(
         "--payout",
@@ -85,18 +104,31 @@ def build_report(args: argparse.Namespace) -> str:
     payout = Payout(rate=args.payout)
     sections: list[str] = [report.header(payout)]
 
-    histories = dataset.collect(
-        db_path=args.db, csv_dir=args.csv_dir, min_bars=args.min_bars
+    db_paths, csv_dirs = args.db, args.csv_dir
+    if args.auto:
+        found_dbs, found_csv_dirs = dataset.discover()
+        db_paths = list(db_paths or []) + found_dbs
+        csv_dirs = list(csv_dirs or []) + found_csv_dirs
+        sections.append(
+            f"Auto-discovery: {len(found_dbs)} database(s) and "
+            f"{len(found_csv_dirs)} folder(s) containing CSVs found under your "
+            "Desktop.\nEverything found is listed in the inventory below, "
+            "including what could not be used."
+        )
+        if not db_paths:
+            db_paths = [None]
+
+    collection = dataset.collect(
+        db_path=db_paths, csv_dir=csv_dirs, min_bars=args.min_bars
     )
-    sections.append(report.inventory(histories))
+    sections.append(report.inventory(collection))
+    histories = collection.histories
 
     if not histories:
-        sections.append("")
         sections.append(
-            "Nothing to analyse. Run the bot or the survey script to record"
-        )
-        sections.append(
-            "candles first, or point --csv-dir at exported history."
+            "Nothing to analyse. Run the bot to record candles first, or point"
+            "\n--csv-dir at exported history. The skip reasons above say why"
+            "\neach source that was checked could not be used."
         )
         return "\n\n".join(sections)
 

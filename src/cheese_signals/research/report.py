@@ -26,44 +26,89 @@ from .stats import Payout
 RULE = "=" * 78
 THIN = "-" * 78
 
+# A Desktop-wide auto-scan rejects a lot of unrelated CSVs; show enough to
+# spot a mistake without burying the report.
+MAX_SKIPS_SHOWN = 25
+
 
 def _fmt_pct(x: float) -> str:
     return f"{x * 100:.2f}%"
 
 
-def inventory(histories: Sequence[AssetHistory]) -> str:
-    """What data actually exists, before any analysis of it."""
+def inventory(collection) -> str:
+    """What data actually exists, before any analysis of it.
+
+    Accepts a ``dataset.Collection`` (or a plain sequence of histories).
+    """
+    histories = getattr(collection, "histories", None)
+    if histories is None:
+        histories = list(collection)
+    skipped = list(getattr(collection, "skipped", []))
+    sources = list(getattr(collection, "sources_read", []))
+
     lines = [RULE, "DATA INVENTORY", RULE]
+
     if not histories:
         lines += [
             "",
             "No candle history found.",
             "",
-            "Looked in the journal (<Desktop>/KPS/signals.db) and any CSV",
-            "directory passed with --csv-dir. Nothing to analyse: the bots",
-            "record candles only while they are running, and this machine has",
-            "no recorded history.",
+            "Nothing to analyse. Every source that was checked, and why it",
+            "could not be used, is listed below.",
         ]
-        return "\n".join(lines)
+    else:
+        total = sum(h.n_bars for h in histories)
+        lines.append(f"{len(histories)} asset(s), {total:,} candles total")
+        lines.append("")
+        lines.append(f"{'asset':<26}{'bars':>10}{'coverage':>11}  span")
+        lines.append(THIN)
+        for h in histories:
+            lines.append(
+                f"{h.asset:<26}{h.n_bars:>10,}{h.coverage:>10.0%}  {h.span}"
+            )
 
-    total = sum(h.n_bars for h in histories)
-    lines.append(f"{len(histories)} asset(s), {total:,} candles total")
-    lines.append("")
-    lines.append(f"{'asset':<24}{'bars':>10}{'coverage':>11}  span")
-    lines.append(THIN)
-    for h in histories:
+        lines.append("")
         lines.append(
-            f"{h.asset:<24}{h.n_bars:>10,}{h.coverage:>10.0%}  {h.span}"
+            "Coverage is recorded bars / calendar minutes in the span. Gaps are"
         )
+        lines.append(
+            "periods no bot was running; they are split apart before mining so no"
+        )
+        lines.append("rule is ever scored across one.")
 
-    lines.append("")
-    lines.append(
-        "Coverage is recorded bars / calendar minutes in the span. Gaps are"
-    )
-    lines.append(
-        "periods no bot was running; they are split apart before mining so no"
-    )
-    lines.append("rule is ever scored across one.")
+    if sources:
+        lines.append("")
+        lines.append(f"Sources read ({len(sources)}):")
+        for source in sources:
+            lines.append(f"  + {source}")
+
+    if skipped:
+        # A Desktop-wide scan can reject hundreds of unrelated CSVs. Show the
+        # ones most likely to be real data first -- anything rejected for a
+        # reason other than "obviously not candles" -- then cap the rest.
+        def _uninteresting(note) -> bool:
+            return "no timestamp column" in note.reason or "not candle data" in note.reason
+
+        notable = [n for n in skipped if not _uninteresting(n)]
+        ordinary = [n for n in skipped if _uninteresting(n)]
+        shown = (notable + ordinary)[:MAX_SKIPS_SHOWN]
+
+        lines.append("")
+        lines.append(f"Sources NOT used ({len(skipped)}):")
+        for note in shown:
+            lines.append(f"  - {note.path}")
+            lines.append(f"      {note.reason}")
+        if len(skipped) > len(shown):
+            lines.append(
+                f"  ... and {len(skipped) - len(shown):,} more, all rejected for"
+            )
+            lines.append("      having no timestamp or no OHLC columns.")
+        lines.append("")
+        lines.append(
+            "Check this list. A file skipped for the wrong reason is data you"
+        )
+        lines.append("think was analysed and was not.")
+
     return "\n".join(lines)
 
 

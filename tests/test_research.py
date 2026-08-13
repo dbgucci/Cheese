@@ -10,6 +10,8 @@ with a progress bar.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -357,4 +359,152 @@ def test_corrupt_candles_are_dropped():
 
 def test_missing_journal_yields_nothing_rather_than_raising(tmp_path):
     assert list(dataset.from_journal(tmp_path / "nope.db")) == []
-    assert dataset.collect(db_path=tmp_path / "nope.db", csv_dir=tmp_path) == []
+    result = dataset.collect(db_path=tmp_path / "nope.db", csv_dir=tmp_path)
+    assert result.histories == []
+    assert any("does not exist" in s.reason for s in result.skipped)
+
+
+def _write_journal(path, frames: dict, table="candles", asset_col="asset"):
+    """Write candle frames to a SQLite file, mimicking a bot's journal."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    cols = f"{asset_col} TEXT, ts TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL"
+    conn.execute(f"CREATE TABLE {table} ({cols})")
+    for asset, df in frames.items():
+        conn.executemany(
+            f"INSERT INTO {table} VALUES (?,?,?,?,?,?,?)",
+            [
+                (asset, ts.isoformat(), r.open, r.high, r.low, r.close, r.volume)
+                for ts, r in df.iterrows()
+            ],
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_multiple_databases_are_all_read(tmp_path):
+    """The candle history is spread across several bots' data folders."""
+    first, second = tmp_path / "a.db", tmp_path / "b.db"
+    _write_journal(first, {"EURUSD_otc": make_candles(n=800, seed=41)})
+    _write_journal(second, {"GBPUSD_otc": make_candles(n=800, seed=42)})
+
+    result = dataset.collect(db_path=[first, second], min_bars=200)
+    assert {h.asset for h in result.histories} == {"EURUSD_otc", "GBPUSD_otc"}
+    assert len(result.sources_read) == 2
+
+
+def test_a_foreign_schema_is_read_by_column_not_by_table_name(tmp_path):
+    """Other bots name their tables differently; find candles by shape."""
+    path = tmp_path / "impulse_evidence.db"
+    _write_journal(path, {"USDCAD_otc": make_candles(n=800, seed=43)}, table="bars")
+
+    result = dataset.collect(db_path=path, min_bars=200)
+    assert [h.asset for h in result.histories] == ["USDCAD_otc"]
+
+
+def test_a_single_pair_table_is_named_after_its_file(tmp_path):
+    """A one-pair bot database has no asset column to group by."""
+    import sqlite3
+
+    path = tmp_path / "USDCAD_impulse.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE evidence (ts TEXT, open REAL, high REAL, low REAL, close REAL)"
+    )
+    df = make_candles(n=800, seed=44)
+    conn.executemany(
+        "INSERT INTO evidence VALUES (?,?,?,?,?)",
+        [(ts.isoformat(), r.open, r.high, r.low, r.close) for ts, r in df.iterrows()],
+    )
+    conn.commit()
+    conn.close()
+
+    result = dataset.collect(db_path=path, min_bars=200)
+    assert [h.asset for h in result.histories] == ["USDCAD_impulse"]
+
+
+def test_a_database_without_candles_is_reported_not_ignored(tmp_path):
+    """A trade-log database must say so, loudly, rather than vanish."""
+    import sqlite3
+
+    path = tmp_path / "trades_only.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE trades (id INTEGER, pnl REAL)")
+    conn.commit()
+    conn.close()
+
+    result = dataset.collect(db_path=path, min_bars=200)
+    assert result.histories == []
+    assert any("open/high/low/close" in s.reason for s in result.skipped)
+    assert any("trades" in s.reason for s in result.skipped)
+
+
+def test_csv_directory_is_searched_recursively(tmp_path):
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    for pair in ("EURUSD_otc_M1", "GBPUSD_otc_M1"):
+        df = make_candles(n=600, seed=45)
+        df.index.name = "timestamp"
+        df.to_csv(raw / f"{pair}.csv")
+
+    result = dataset.collect(csv_dir=tmp_path, min_bars=200)
+    assert {h.asset for h in result.histories} == {"EURUSD_otc_M1", "GBPUSD_otc_M1"}
+
+
+def test_a_trade_log_csv_is_reported_as_not_candle_data(tmp_path):
+    """Trade exports live beside candle exports and must not be mistaken for them."""
+    path = tmp_path / "trades_20260807.csv"
+    pd.DataFrame(
+        {
+            "time": pd.date_range("2025-01-01", periods=50, freq="1min", tz="UTC"),
+            "direction": ["CALL"] * 50,
+            "pnl": [1.0] * 50,
+        }
+    ).to_csv(path, index=False)
+
+    result = dataset.collect(csv_dir=tmp_path, min_bars=10)
+    assert result.histories == []
+    assert any("not candle data" in s.reason for s in result.skipped)
+
+
+def test_discovery_finds_databases_and_csv_folders(tmp_path):
+    """Auto-discovery must reach every bot's data folder, not just the journal."""
+    desktop = tmp_path / "Desktop"
+    (desktop / "KPS").mkdir(parents=True)
+    (desktop / "BOT A" / "data").mkdir(parents=True)
+    (desktop / "research" / "raw").mkdir(parents=True)
+
+    _write_journal(desktop / "KPS" / "signals.db", {"EURUSD_otc": make_candles(n=300)})
+    _write_journal(desktop / "BOT A" / "data" / "evidence.db", {"GBPUSD_otc": make_candles(n=300)})
+    make_candles(n=300).to_csv(desktop / "research" / "raw" / "USDJPY_otc_M1.csv")
+
+    databases, csv_dirs = dataset.discover([desktop])
+    assert len(databases) == 2
+    assert desktop / "research" / "raw" in [Path(d) for d in csv_dirs]
+
+
+def test_discovery_skips_virtualenvs_and_repos(tmp_path):
+    """A .venv full of package data would swamp the scan and the report."""
+    desktop = tmp_path / "Desktop"
+    for junk in (".venv", "node_modules", "__pycache__", ".git"):
+        (desktop / "checkout" / junk).mkdir(parents=True)
+        (desktop / "checkout" / junk / "cache.db").write_bytes(b"")
+
+    databases, _ = dataset.discover([desktop])
+    assert databases == []
+
+
+def test_the_same_pair_from_two_sources_is_merged_not_duplicated(tmp_path):
+    """Two bots recording EURUSD must produce one series, not two."""
+    df = make_candles(n=1000, seed=46)
+    first, second = tmp_path / "a.db", tmp_path / "b.db"
+    _write_journal(first, {"EURUSD_otc": df.iloc[:600]})
+    _write_journal(second, {"EURUSD_otc": df.iloc[400:]})  # deliberate overlap
+
+    result = dataset.collect(db_path=[first, second], min_bars=200)
+    assert len(result.histories) == 1
+    merged = result.histories[0]
+    assert merged.n_bars == 1000  # 600 + 600 with 200 overlapping
+    assert merged.candles.index.is_monotonic_increasing
+    assert not merged.candles.index.has_duplicates

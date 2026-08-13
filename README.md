@@ -149,9 +149,10 @@ against every candle the bots have ever recorded, and is built so that
 "there is no edge here" is a result it is allowed to return.
 
 ```bash
-python run_research.py                          # journal only
+python run_research.py --auto                   # find and analyse everything
+python run_research.py --db a.db b.db           # specific databases
 python run_research.py --csv-dir ./history      # plus CSV exports
-python run_research.py --payout 0.80            # your real payout
+python run_research.py --auto --payout 0.80     # your real payout
 ```
 
 On Windows, double-click `research_windows.bat` and read the report it
@@ -160,6 +161,23 @@ drops on your Desktop.
 **Run it on the machine that ran the bots.** The candle journal lives in
 `<Desktop>/KPS/signals.db` and is gitignored on purpose, so it never
 travels with a clone of this repo.
+
+`--auto` searches your Desktop folders for every database and CSV holding
+candles, because in practice the history ends up spread across several
+bots' data folders rather than sitting in one file. Databases are read by
+*column shape* — any table with open/high/low/close — so another bot's
+schema is picked up without needing to know its table names, and a
+single-pair table with no asset column is named after its file.
+
+The same pair recorded by two different bots is merged into one series
+rather than analysed twice.
+
+**Every source that could not be used is listed in the report with the
+reason.** Trade logs and results tables live in the same folders as candle
+exports and are easy to mistake for data; a run that silently ignored them
+would still print a confident-looking report with no way to tell. Read the
+"Sources NOT used" list — anything there that you believe *is* candle data
+means you are analysing less than you think.
 
 ### What it does, and why each step is there
 
