@@ -626,9 +626,19 @@ class ActivityPage(QWidget):
             f"background: {theme.BG_ELEVATED}; border: none;")
         lay.addWidget(self.view)
         root.addWidget(body, 1)
+        # An empty black box on a fresh start is indistinguishable from a broken
+        # one, which is the confusion this page exists to prevent.
+        self.add("Waiting for MetaTrader 5. Connection attempts, opening ranges, "
+                 "breaks, retests and skip reasons all appear here.")
 
     def add(self, line: str) -> None:
-        self.view.appendPlainText(line)
+        """One line, stamped with the local time it was observed.
+
+        The stamp is not redundant with the times inside the messages: those are
+        market times a bar carries, this is when the app saw it. A gap between
+        them is how a stalled feed shows itself.
+        """
+        self.view.appendPlainText(f"{datetime.now():%H:%M:%S}  {line}")
 
 
 # --------------------------------------------------------------------------
@@ -788,6 +798,8 @@ class SignalsWindow(QMainWindow):
             f"Prices only — this app has no way to place an order.")
         self.feed.start_btn.setEnabled(True)
         self.set_status(f"Connected to {diag['company']}.")
+        self.activity.add(f"Connected to {diag['company']}, server "
+                          f"{diag['server']}, account {diag['login']}.")
 
     def _on_connect_failed(self, error: str) -> None:
         self.feed.broker_text.setText(
@@ -797,6 +809,7 @@ class SignalsWindow(QMainWindow):
             "from it.")
         self.feed.start_btn.setEnabled(False)
         self.set_status("Not connected — see the Signals page.")
+        self.activity.add(f"Not connected: {error}")
 
     def _on_resolved(self, available: list, missing: list) -> None:
         self.feed.tile_watching.set_value(str(len(available)))
