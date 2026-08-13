@@ -142,6 +142,80 @@ of any exchange. That has real consequences the strategy design accounts for
 None of the above is settled fact about your particular feed. It's the
 starting prior — and the journal exists so you can overturn it with data.
 
+## Research: answering the OTC question with your own data
+
+The priors above are guesses until measured. `run_research.py` measures them
+against every candle the bots have ever recorded, and is built so that
+"there is no edge here" is a result it is allowed to return.
+
+```bash
+python run_research.py                          # journal only
+python run_research.py --csv-dir ./history      # plus CSV exports
+python run_research.py --payout 0.80            # your real payout
+```
+
+On Windows, double-click `research_windows.bat` and read the report it
+drops on your Desktop.
+
+**Run it on the machine that ran the bots.** The candle journal lives in
+`<Desktop>/KPS/signals.db` and is gitignored on purpose, so it never
+travels with a clone of this repo.
+
+### What it does, and why each step is there
+
+**Step 1 — is the feed predictable at all?** Four tests (autocorrelation,
+sign persistence, a runs test, and Lo–MacKinlay variance ratios) ask whether
+the series departs from a random walk. This runs *first* and governs
+everything after it: if a feed is a random walk, no algorithm can beat 50%,
+and at a 92% payout every trade has an expectancy of −4.2%. Mining such a
+feed produces beautiful backtests and nothing else.
+
+**Step 2 — pattern search, with the anti-fooling machinery wired in.** The
+miner enumerates thousands of conditions over candle shape, streaks,
+volatility regime, indicator state and clock, and scores a 1-minute binary
+option under each. Three gates:
+
+1. **Break-even, not 50%.** At a 92% payout you need 52.08% to break even,
+   not 50%. Every win rate in the report is printed against that line.
+2. **Multiple-testing correction.** Testing thousands of rules at p<0.05
+   yields dozens of "significant" hits on pure noise. Benjamini–Hochberg FDR
+   control puts a leash on that, and the report always states how many
+   hypotheses were examined — a finding's credibility depends entirely on
+   how many places you looked.
+3. **Out-of-sample confirmation.** Rules are found on a chronological
+   training split, re-scored on validation, then measured once on a test
+   split nothing touched. The gap between training and test win rate *is*
+   the overfitting, measured rather than assumed.
+
+A rule is only labelled CONFIRMED if it clears break-even on both unseen
+splits *and* the lower bound of its test-split confidence interval clears it
+too — a point estimate on forty trades is not a confirmation.
+
+### Why you should believe the tool before you believe its output
+
+Two tests in `tests/test_research.py` establish the properties that make a
+research tool worth running at all:
+
+- `test_random_walk_yields_no_findings` — on a pure random walk it examines
+  well over a thousand hypotheses and confirms **zero**. It does not invent
+  edges in noise.
+- `test_planted_edge_is_recovered` — on a series with a known edge planted
+  at one hour of the day, it finds the edge and attributes it to the right
+  feature.
+
+A tool with only the second property is a random number generator with a
+progress bar. `test_features_never_look_ahead` asserts the third necessary
+property directly: features at bar *i* do not change when future bars are
+deleted.
+
+### The number that ends most arguments
+
+Detecting a genuine 55% win rate against a 52.08% break-even, at 80% power,
+needs roughly **1,800 decided trades**. Any claimed edge backed by sixty
+trades is, statistically, backed by nothing — which is why the report prints
+this figure next to every result and why signal services quote win rates
+without sample sizes.
+
 ## Setups and triggers
 
 The engine separates *what to trade* from *when to enter*, because the two
@@ -414,6 +488,13 @@ src/cheese_signals/
   risk.py             position sizing, trade pacing, session filters
   bot.py              CLI (backtest / lab / watch)
   data/               synthetic, csv, pocket_option feeds
+  research/           does an edge exist at all? (run before trusting one)
+    stats.py          payout economics, exact binomial tests, BH correction
+    randomwalk.py     four tests for whether a feed is predictable at all
+    dataset.py        every recorded candle, from the journal and CSVs
+    features.py       backward-looking bar features + the 1-bar outcome
+    mine.py           pattern search with FDR control and walk-forward splits
+    report.py         results printed so they cannot read as a promise
   notifiers/          telegram
   gui/                PySide6 app
     theme.py          palette, spacing grid, the whole stylesheet
@@ -422,6 +503,8 @@ src/cheese_signals/
     branding.py       KPS logo and .ico generation
 tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
+run_research.py       CLI for the research package
+research_windows.bat  one-click research run on Windows
 ```
 
 ## Tests
