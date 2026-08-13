@@ -63,6 +63,7 @@ from .widgets import StatStrip, StatTile, StatusDot, hairline
 APP_NAME = "ORB Signals"
 APP_TAGLINE = "BREAK · RETEST"
 MARK = "ORB"
+SIDEBAR_MIN_WIDTH = 252
 
 KIND_COLOUR = {sig.BREAK: theme.GOLD, sig.RETEST: theme.GOLD_BRIGHT}
 
@@ -704,9 +705,12 @@ class SignalsWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("Sidebar")
-        # 232 clipped "ORB Signals" to "ORB Signal" -- the brand mark is
-        # letter-spaced, so it needs more room than its character count suggests.
-        bar.setFixedWidth(252)
+        # A floor, not the final width: _fit_sidebar raises it if the brand mark
+        # needs more. A hard-coded width cannot be right on every platform --
+        # 232 clipped "ORB Signals" to "ORB Signal" here, and 252 still clipped
+        # it on Windows, where the same letter-spaced text measures 286px.
+        bar.setFixedWidth(SIDEBAR_MIN_WIDTH)
+        self._sidebar = bar
         lay = QVBoxLayout(bar)
         lay.setContentsMargins(14, 30, 14, 20)
         lay.setSpacing(2)
@@ -716,8 +720,13 @@ class SignalsWindow(QMainWindow):
         brandbox.setSpacing(3)
         brand = QLabel(APP_NAME)
         brand.setObjectName("BrandMark")
+        # Tighter than the shared BrandMark style, which was written for a
+        # three-letter mark: at 21px with 5px of tracking, eleven characters need
+        # a 340px sidebar on Windows.
+        brand.setStyleSheet("font-size: 18px; letter-spacing: 3px;")
         sub = QLabel(APP_TAGLINE)
         sub.setObjectName("BrandSub")
+        self._brand_labels = (brand, sub)
         brandbox.addWidget(brand)
         brandbox.addWidget(sub)
         lay.addLayout(brandbox)
@@ -748,6 +757,24 @@ class SignalsWindow(QMainWindow):
         note.setContentsMargins(12, 0, 12, 0)
         lay.addWidget(note)
         return bar
+
+    def showEvent(self, event):        # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self._fit_sidebar()
+
+    def _fit_sidebar(self) -> None:
+        """Widen the sidebar if the brand mark does not fit inside it.
+
+        Measured here rather than in the constructor because the fonts come from
+        the stylesheet, which Qt applies on polish -- so the width the mark needs
+        is not knowable until the window is shown, and it is not the same number
+        on every platform. This is what stops the mark rendering as
+        "ORB Signal".
+        """
+        margins = self._sidebar.layout().contentsMargins()
+        padding = margins.left() + margins.right() + 12 * 2
+        needed = max(label.sizeHint().width() for label in self._brand_labels)
+        self._sidebar.setFixedWidth(max(SIDEBAR_MIN_WIDTH, needed + padding))
 
     def _build_statusbar(self) -> QWidget:
         bar = QFrame()

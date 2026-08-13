@@ -79,29 +79,64 @@ def card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
     return frame, lay
 
 
-def table(headers: list[str], stretch: int = 0, row_height: int = 34,
-          widths: dict[int, int] | None = None) -> QTableWidget:
-    """A fixed-metric table.
+class FittedTable(QTableWidget):
+    """A fixed-metric table whose columns are never narrower than their headers.
 
     Column sizing is never ``ResizeToContents``. Doing that on a populated,
     visible table re-measures every cell on every write, which is the bug that
-    once took this app's History tab to ninety seconds to open.
+    once took this app's History tab to ninety seconds to open. So the widths
+    are given in pixels -- and a pixel width that fits on one machine elides on
+    another, because the header font is not the same width everywhere. A 160px
+    column that held "Range window" on Linux rendered it "!ange windov" on
+    Windows, where the same request needs 162px.
+
+    The widths passed in are therefore treated as a request, and raised if the
+    header text needs more. Measured on ``showEvent`` rather than in the
+    constructor: the font comes from the stylesheet, which Qt does not apply
+    until the widget is polished, so measuring any earlier measures the wrong
+    font.
     """
-    t = QTableWidget(0, len(headers))
-    t.setHorizontalHeaderLabels(headers)
-    t.verticalHeader().setVisible(False)
-    t.verticalHeader().setDefaultSectionSize(row_height)
-    t.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-    t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    t.setShowGrid(False)
-    header = t.horizontalHeader()
-    for i in range(len(headers)):
-        header.setSectionResizeMode(
-            i, QHeaderView.ResizeMode.Stretch if i == stretch
-            else QHeaderView.ResizeMode.Fixed)
-        if i != stretch:
-            t.setColumnWidth(i, (widths or {}).get(i, 100))
-    return t
+
+    def __init__(self, headers: list[str], stretch: int, row_height: int,
+                 widths: dict[int, int]):
+        super().__init__(0, len(headers))
+        self._asked = dict(widths)
+        self._stretch = stretch
+        self.setHorizontalHeaderLabels(headers)
+        self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(row_height)
+        self.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setShowGrid(False)
+        header = self.horizontalHeader()
+        for i in range(len(headers)):
+            header.setSectionResizeMode(
+                i, QHeaderView.ResizeMode.Stretch if i == stretch
+                else QHeaderView.ResizeMode.Fixed)
+            if i != stretch:
+                self.setColumnWidth(i, self._asked.get(i, 100))
+
+    def showEvent(self, event):        # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self.fit_headers()
+
+    def fit_headers(self) -> None:
+        metrics = self.horizontalHeader().fontMetrics()
+        for i in range(self.columnCount()):
+            if i == self._stretch:
+                continue
+            item = self.horizontalHeaderItem(i)
+            if item is None:
+                continue
+            # 24px of slack for the section's own padding and the sort-indicator
+            # gap; header text is centred, so it needs room on both sides.
+            needed = metrics.horizontalAdvance(item.text()) + 24
+            self.setColumnWidth(i, max(self._asked.get(i, 100), needed))
+
+
+def table(headers: list[str], stretch: int = 0, row_height: int = 34,
+          widths: dict[int, int] | None = None) -> QTableWidget:
+    return FittedTable(headers, stretch, row_height, widths or {})
 
 
 def cell(text: str, colour: str | None = None, mono: bool = False) -> QTableWidgetItem:

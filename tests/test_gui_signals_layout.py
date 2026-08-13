@@ -119,6 +119,59 @@ def test_the_brand_mark_fits_the_sidebar(window):
             f"brand '{brand.text()}' is clipped"
 
 
+def test_the_sidebar_widens_for_a_brand_mark_that_does_not_fit(window, app):
+    """The mechanism, not the current numbers.
+
+    The plain "is the brand clipped" test above passed locally on 252px and the
+    Windows build clipped anyway, where the same letter-spaced text measures
+    286px -- a fixed width cannot be right on both. So this enlarges the mark
+    until it cannot possibly fit and asserts the sidebar follows it, which is
+    what makes the platform's own metrics irrelevant.
+    """
+    brand = window._brand_labels[0]
+    before = window._sidebar.width()
+    original = brand.styleSheet()
+    try:
+        brand.setStyleSheet("font-size: 44px; letter-spacing: 9px;")
+        brand.updateGeometry()
+        window._fit_sidebar()
+        _settle(app)
+        assert window._sidebar.width() > before
+        assert brand.width() + 1 >= brand.sizeHint().width()
+    finally:
+        brand.setStyleSheet(original)
+        brand.updateGeometry()
+        window._fit_sidebar()
+        _settle(app)
+
+
+def test_a_column_widens_for_a_header_that_does_not_fit(window, app):
+    """Same argument for the tables: 160px held "Range window" here and elided
+    it on Windows, which needs 162. The requested width is a floor."""
+    from PySide6.QtGui import QFont
+
+    window.nav_group.button(0).click()
+    _settle(app)
+    table = window.feed.state_table
+    header = table.horizontalHeader()
+    before = [table.columnWidth(c) for c in range(table.columnCount())]
+    original = header.font()
+    try:
+        big = QFont(original)
+        big.setPointSize(original.pointSize() + 14 if original.pointSize() > 0
+                         else 30)
+        header.setFont(big)
+        table.fit_headers()
+        _settle(app)
+        widened = [c for c in range(table.columnCount())
+                   if table.columnWidth(c) > before[c]]
+        assert widened, "no column grew for a header that no longer fits"
+    finally:
+        header.setFont(original)
+        table.fit_headers()
+        _settle(app)
+
+
 def test_no_table_header_is_elided(window, app):
     """"Range window" rendered as "!ange windov". QTableWidget centres header
     text, so a column needs more width than the label alone."""
