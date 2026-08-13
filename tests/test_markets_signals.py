@@ -386,3 +386,280 @@ def test_a_broker_clock_offset_is_measured_and_corrected():
     bot.calibrate(real_now=at(16))
     assert bot.clock.server_offset_minutes == 180
     assert [s.kind for s in bot.cycle(at(16))] == [BREAK]
+
+
+# ------------------------------ the result ------------------------------
+#
+# The retest is the entry, so from there the alert can be scored. These numbers
+# are all derived from one setup: a 200-point range (44010/43990), a retest entry
+# at the 44010 level, a stop at 43990 (200 points of risk) and a 2R target at
+# 44050. The frame's spread is 10 points, so a 2R win nets 1.95R and a stop nets
+# -1.05R -- the gap between gross and net is the whole reason both are reported.
+BREAK_BAR = (44020, 44005, 44015)
+RETEST_BAR = (44022, 44009, 44014)
+
+
+def run_to(bot, last_minute):
+    """Poll every minute up to and including ``last_minute``, as the app does."""
+    for minute in range(16, last_minute + 1):
+        bot.cycle(at(minute))
+
+
+def test_a_target_hit_after_the_retest_is_recorded_as_a_win():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),          # trades through the 44050 target
+    ]))
+    run_to(bot, 18)
+    assert len(bot.outcomes) == 1
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.WIN
+    assert outcome.exit_price == 44050.0
+    assert outcome.r_gross == pytest.approx(2.0)
+    assert outcome.r_net == pytest.approx(1.95)
+    assert outcome.points == pytest.approx(400.0)
+
+
+def test_a_stop_hit_after_the_retest_is_recorded_as_a_loss():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44012, 43985, 43990),          # trades through the 43990 stop
+    ]))
+    run_to(bot, 18)
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.LOSS
+    assert outcome.exit_price == 43990.0
+    assert outcome.r_gross == pytest.approx(-1.0)
+    assert outcome.r_net == pytest.approx(-1.05), "the spread is charged on a loss too"
+
+
+def test_a_bar_holding_both_levels_is_scored_as_a_loss():
+    """Which came first is not in the OHLC. Guessing favourably is the easiest
+    way to invent a win rate, so the loss is assumed and the trade is flagged."""
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44060, 43980, 44020),          # spans the stop and the target
+    ]))
+    run_to(bot, 18)
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.LOSS
+    assert outcome.ambiguous is True
+    assert "both" in outcome.format()
+
+
+def test_the_entry_bar_cannot_resolve_the_trade():
+    """The fill is at the level somewhere inside that minute and the OHLC does
+    not say where, so letting it also hit the target is a bar of lookahead."""
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        (44060, 44009, 44014),          # the retest bar itself spans the target
+    ]))
+    run_to(bot, 17)
+    assert [s.kind for s in bot.signals] == [BREAK, RETEST]
+    assert bot.outcomes == []
+    assert bot.watches[("US30", DAY)].following is True
+
+
+def test_a_trade_that_touches_neither_level_is_flattened_at_the_cut_off():
+    """Not a loss: it did not lose, and counting it as one makes a quiet morning
+    look like a bad strategy. The exit is the price at the flatten moment."""
+    from dataclasses import replace
+
+    # 372 minutes before the 21:00 UTC close puts the flat-by at 14:48, which is
+    # inside this frame instead of six hours past the end of it.
+    cfg = replace(LOOSE, flat_before_close_minutes=372)
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44020, 44008, 44015),          # neither level
+        (44030, 44005, 44025),          # 14:48: the cut-off, opens at 44025
+    ]), cfg=cfg)
+    run_to(bot, 19)
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.FLAT
+    assert outcome.exit_price == 44025.0
+    assert outcome.r_gross == pytest.approx(0.75)
+    assert "flattened" in outcome.reason
+
+
+def test_the_sell_side_result_mirrors():
+    bot, _ = make(range_then([
+        (43995, 43980, 43985),          # break down through 43990
+        (43991, 43975, 43980),          # retest of the 43990 level
+        (43980, 43945, 43950),          # trades through the 43950 target
+    ]))
+    run_to(bot, 18)
+    outcome = bot.outcomes[0]
+    assert outcome.direction == SELL
+    assert outcome.result == signals.WIN
+    assert outcome.exit_price == 43950.0
+    assert outcome.r_gross == pytest.approx(2.0)
+
+
+def test_a_result_is_recorded_once_no_matter_how_often_it_is_polled():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),
+        (44060, 44040, 44055),
+        (44030, 43980, 43990),          # would hit the stop, after the exit
+    ]))
+    run_to(bot, 25)
+    assert len(bot.outcomes) == 1
+    assert bot.watches[("US30", DAY)].done is True
+
+
+def test_the_entry_window_closing_does_not_kill_a_running_trade():
+    """The deadline stops new entries. Applied to a watch that is already in a
+    trade it marked the day skipped and the result was never recorded."""
+    bot, _ = make(range_then([BREAK_BAR, RETEST_BAR]))
+    run_to(bot, 18)
+    bot.cycle(at(200))                  # long past the 120-minute entry window
+    watch = bot.watches[("US30", DAY)]
+    assert watch.state == signals.RETESTED
+    assert watch.following is True, "still waiting for a level to be touched"
+
+
+def test_tracking_can_be_switched_off_and_then_the_day_ends_at_the_retest():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),
+    ]), track_outcomes=False)
+    run_to(bot, 18)
+    watch = bot.watches[("US30", DAY)]
+    assert watch.trade is None
+    assert watch.done is True
+    assert bot.outcomes == []
+
+
+# ------------------------------ the tally ------------------------------
+def outcome(result, r_net=1.95, r_gross=2.0):
+    return signals.Outcome(
+        symbol="US30", direction=BUY, result=result, entry=1.0, stop=0.9,
+        target=1.2, exit_price=1.2, opened_at=OPEN, closed_at=OPEN,
+        risk_points=100.0, points=200.0, cost_points=10.0, r_gross=r_gross,
+        r_net=r_net, session_label="US cash", reason="")
+
+
+def test_the_tally_counts_wins_losses_and_flats():
+    tally = signals.Tally()
+    for result in (signals.WIN, signals.WIN, signals.LOSS):
+        tally.add(outcome(result))
+    assert (tally.wins, tally.losses, tally.flats) == (2, 1, 0)
+    assert tally.resolved == 3
+
+
+def test_a_flat_is_left_out_of_the_win_rate():
+    """It neither won nor lost. Counting it as a loss understates the edge."""
+    tally = signals.Tally()
+    tally.add(outcome(signals.WIN))
+    tally.add(outcome(signals.LOSS))
+    tally.add(outcome(signals.FLAT, r_net=0.0, r_gross=0.0))
+    assert tally.win_rate == pytest.approx(0.5)
+    assert "flat" in tally.summary()
+
+
+def test_the_tally_carries_total_r_as_well_as_the_win_rate():
+    """A 30% hit rate at 2R makes money and a 60% one at 0.5R does not, so the
+    win rate alone cannot say whether the alerts are worth taking."""
+    tally = signals.Tally()
+    tally.add(outcome(signals.WIN))
+    tally.add(outcome(signals.LOSS, r_net=-1.05, r_gross=-1.0))
+    assert tally.r_net == pytest.approx(0.90)
+    assert tally.r_gross == pytest.approx(1.0)
+    assert "+0.90R net" in tally.summary()
+
+
+def test_an_empty_tally_says_so_rather_than_showing_a_zero_win_rate():
+    assert signals.Tally().summary() == "no results yet"
+    assert signals.Tally().win_rate == 0.0
+
+
+def test_outcomes_are_drained_so_a_poll_only_reports_what_is_new():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),
+    ]))
+    run_to(bot, 18)
+    assert len(bot.take_outcomes()) == 1
+    assert bot.take_outcomes() == []
+
+
+def test_the_result_message_carries_the_numbers_needed_to_check_it():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),
+    ]))
+    run_to(bot, 18)
+    text = bot.outcomes[0].format()
+    assert "WIN" in text and "US30" in text
+    assert "+1.95R net" in text
+    assert "+2.00R" in text, "the gross figure is shown beside the net one"
+    assert "44050" in text
+
+
+def test_a_result_is_written_to_the_activity_notes_with_the_running_record():
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44055, 44020, 44050),
+    ]))
+    run_to(bot, 18)
+    assert any("WIN" in note and "1W / 0L" in note for note in bot.notes)
+
+
+def test_a_trade_is_closed_out_when_the_bars_simply_stop():
+    """A feed gap, a holiday or a Friday close means the cut-off bar never
+    arrives. Without this the trade follows price into next week.
+
+    The two-minute grace is what keeps this a fallback: at the moment the clock
+    first passes the cut-off, the bar stamped at it has not closed yet, and
+    settling then exits a bar early at the wrong price.
+    """
+    from dataclasses import replace
+
+    cfg = replace(LOOSE, flat_before_close_minutes=372)     # cut-off 14:48
+    bot, _ = make(range_then([
+        BREAK_BAR,
+        RETEST_BAR,
+        (44020, 44008, 44015),          # 14:47, then the feed stops
+    ]), cfg=cfg)
+    run_to(bot, 18)
+    assert bot.outcomes == [], "the cut-off bar might still be coming"
+    bot.cycle(at(51))
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.FLAT
+    assert outcome.exit_price == 44015.0, "the last price there was"
+    assert "the session ended" in outcome.reason
+
+
+def test_a_trade_left_open_by_a_dead_session_is_not_left_open_forever():
+    """The watch is keyed by session date, so once the date rolls over nothing
+    looks at it again -- and a result that is never recorded is a hole in the
+    record rather than a neutral omission.
+
+    The sweep runs an hour after the cut-off so the settlement that can see bars
+    always gets there first.
+    """
+    from dataclasses import replace
+
+    cfg = replace(LOOSE, flat_before_close_minutes=372)     # cut-off 14:48
+    bot, _ = make(range_then([BREAK_BAR, RETEST_BAR]), cfg=cfg)
+    run_to(bot, 17)
+    watch = bot.watches[("US30", DAY)]
+    assert watch.following is True
+    bot.cycle(at(30))                   # 15:00, inside the hour of grace
+    assert watch.following is True
+    bot.cycle(at(140))                  # 16:50, past it
+    outcome = bot.outcomes[0]
+    assert outcome.result == signals.FLAT
+    assert outcome.exit_price == outcome.entry, "no idea what it did, so 0R gross"
+    assert outcome.r_gross == 0.0
+    assert "the feed stopped" in outcome.reason
+    assert watch.done is True

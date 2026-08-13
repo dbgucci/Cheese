@@ -80,21 +80,25 @@ def card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
 
 
 class FittedTable(QTableWidget):
-    """A fixed-metric table whose columns are never narrower than their headers.
+    """A fixed-metric table whose columns are never narrower than their contents.
 
-    Column sizing is never ``ResizeToContents``. Doing that on a populated,
-    visible table re-measures every cell on every write, which is the bug that
-    once took this app's History tab to ninety seconds to open. So the widths
-    are given in pixels -- and a pixel width that fits on one machine elides on
-    another, because the header font is not the same width everywhere. A 160px
-    column that held "Range window" on Linux rendered it "!ange windov" on
-    Windows, where the same request needs 162px.
+    Column sizing is never ``ResizeToContents``. That mode re-measures every cell
+    on every write and every repaint, which is the bug that once took this app's
+    History tab to ninety seconds to open. So widths are given in pixels -- and a
+    pixel width that fits on one machine clips on another, because neither the
+    font nor the padding around the text is the same everywhere. Two versions of
+    this shipped broken: a 160px column held "Range window" on Linux and rendered
+    it "!ange windov" on Windows, and 70px held "14:46" in the header while
+    eliding it to "14:..." in the cells, because the stylesheet's 14px of item
+    padding is invisible to ``fontMetrics``.
 
-    The widths passed in are therefore treated as a request, and raised if the
-    header text needs more. Measured on ``showEvent`` rather than in the
-    constructor: the font comes from the stylesheet, which Qt does not apply
-    until the widget is polished, so measuring any earlier measures the wrong
-    font.
+    So the numbers are not measured by hand at all. The widths passed in are a
+    request, raised to whatever Qt says the header and the contents need --
+    ``sectionSizeHint`` and ``sizeHintForColumn``, which know about the padding,
+    the font and the letter-spacing because they come from the same style that
+    paints the cells. Measured on ``showEvent`` and after a write rather than in
+    the constructor: the fonts come from the stylesheet, which Qt does not apply
+    until the widget is polished, so anything earlier measures the wrong font.
     """
 
     def __init__(self, headers: list[str], stretch: int, row_height: int,
@@ -118,20 +122,28 @@ class FittedTable(QTableWidget):
 
     def showEvent(self, event):        # noqa: N802 - Qt naming
         super().showEvent(event)
-        self.fit_headers()
+        self.fit_columns()
 
-    def fit_headers(self) -> None:
-        metrics = self.horizontalHeader().fontMetrics()
-        for i in range(self.columnCount()):
-            if i == self._stretch:
+    def fit_columns(self) -> None:
+        """Widen any column too narrow for its header or its cells.
+
+        Call it once after a batch of writes, not per cell: it is O(rows), which
+        is nothing at the few dozen rows these tables hold, and quadratic if
+        called from inside the write loop.
+        """
+        header = self.horizontalHeader()
+        for col in range(self.columnCount()):
+            if col == self._stretch:
                 continue
-            item = self.horizontalHeaderItem(i)
-            if item is None:
-                continue
-            # 24px of slack for the section's own padding and the sort-indicator
-            # gap; header text is centred, so it needs room on both sides.
-            needed = metrics.horizontalAdvance(item.text()) + 24
-            self.setColumnWidth(i, max(self._asked.get(i, 100), needed))
+            asked = self._asked.get(col, 100)
+            needed = max(asked, header.sectionSizeHint(col))
+            if self.rowCount():
+                # Capped, because the contents are data: one pathologically long
+                # cell must not push the table into a horizontal scrollbar and
+                # squeeze every other column to pay for it.
+                needed = max(needed, min(self.sizeHintForColumn(col),
+                                         int(asked * 2.2)))
+            self.setColumnWidth(col, needed)
 
 
 def table(headers: list[str], stretch: int = 0, row_height: int = 34,

@@ -82,8 +82,79 @@ def main(argv: list[str]) -> int:
         print("WARNING: the settings page has no scroll area, so it cannot "
               "scroll -- tall content will be compressed instead")
 
+    _sample(app, win, out)
     win.close()
     return 0
+
+
+def _sample(app, win, out) -> None:
+    """One more shot of the Signals page with rows in the tables.
+
+    An empty table proves the headers fit and nothing else. The alignment of the
+    values under them, and whether a result reads clearly next to the entry it
+    belongs to, only show up with data in the rows -- and this app's tables are
+    empty until a market opens, so a build would otherwise never picture them.
+    The numbers below are invented; they exist to be looked at, not believed.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from cheese_signals.markets import signals as sig
+    from cheese_signals.markets.execution import BUY, SELL
+
+    now = datetime(2026, 3, 2, 14, 46, tzinfo=timezone.utc)
+
+    def signal(kind, symbol, direction, entry, stop, target, digits, at):
+        return sig.Signal(
+            kind=kind, symbol=symbol, direction=direction, at=at, entry=entry,
+            stop=stop, target=target, range_low=entry - 20, range_high=entry,
+            range_points=200.0, risk_points=200.0, reward_points=400.0,
+            cost_points=12.0, session_label="US cash equities",
+            session_open=now - timedelta(minutes=16),
+            flat_by=now + timedelta(hours=6), reason="sample", digits=digits)
+
+    rows = [
+        signal(sig.BREAK, "US30", BUY, 44015.0, 43990.0, 44065.0, 1, now),
+        signal(sig.RETEST, "US30", BUY, 44010.0, 43990.0, 44050.0, 1,
+               now + timedelta(minutes=4)),
+        signal(sig.BREAK, "XAUUSD", SELL, 2412.40, 2418.90, 2399.40, 2,
+               now + timedelta(minutes=9)),
+    ]
+    for row in rows:
+        win.feed.add_signal(row)
+
+    entry = rows[1]
+    win.feed.set_result(sig.Outcome(
+        symbol="US30", direction=BUY, result=sig.WIN, entry=entry.entry,
+        stop=entry.stop, target=entry.target, exit_price=entry.target,
+        opened_at=entry.at, closed_at=entry.at + timedelta(minutes=23),
+        risk_points=200.0, points=400.0, cost_points=12.0, r_gross=2.0,
+        r_net=1.94, session_label="US cash equities",
+        reason="the target at 44050.0 was reached", digits=1))
+    win.tally.add(sig.Outcome(
+        symbol="US30", direction=BUY, result=sig.WIN, entry=1.0, stop=0.9,
+        target=1.2, exit_price=1.2, opened_at=now, closed_at=now,
+        risk_points=200.0, points=400.0, cost_points=12.0, r_gross=2.0,
+        r_net=1.94, session_label="US cash equities", reason=""))
+    win.tally.add(sig.Outcome(
+        symbol="XAUUSD", direction=SELL, result=sig.LOSS, entry=1.0, stop=1.1,
+        target=0.8, exit_price=1.1, opened_at=now, closed_at=now,
+        risk_points=65.0, points=-65.0, cost_points=4.0, r_gross=-1.0,
+        r_net=-1.06, session_label="London", reason=""))
+    win.refresh_record_tile()
+    win.feed.set_states([
+        {"symbol": "US30", "window": "14:30-14:45", "range": "200 pts",
+         "state": "retested", "detail": "came back to 44010.0 and held it"},
+        {"symbol": "XAUUSD", "window": "08:00-08:15", "range": "64 pts",
+         "state": "skipped", "detail": "the range is 1.8x the round-trip cost, "
+                                       "below the 3.0x minimum"},
+    ])
+
+    win.nav_group.button(0).click()
+    for _ in range(40):
+        app.processEvents()
+    path = out / "signals-sample.png"
+    win.grab().save(str(path))
+    print(f"wrote {path}")
 
 
 if __name__ == "__main__":

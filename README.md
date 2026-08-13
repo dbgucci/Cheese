@@ -347,19 +347,67 @@ Spread  25 pts  (range is 24.0x it)
 08:17 UTC  ·  London open 08:00  ·  flat by 16:20
 ```
 
+#### Did it work? The paper record
+
+The retest is the entry, so each alert gets scored. From the retest onward the
+bars are followed until the published stop or target is touched, and the result
+is recorded — win, loss, or flat if neither happened before the session's
+cut-off. That is the only way to find out whether the alerts are worth acting
+on, and it costs nothing, because no position exists.
+
+```
+WIN  US30  BUY  +1.94R
+
+Entry   44010.0
+Exit    44050.0   (+400 pts)
+Result  +1.94R net   (+2.00R before the 12pt round trip)
+
+the target at 44050.0 was reached
+Held 23 min  ·  closed 15:09 UTC  ·  US cash equities
+```
+
+Three rules keep the record from flattering itself, the same ones the
+backtester argues for:
+
+- **The entry bar cannot resolve the trade.** The fill is at the level somewhere
+  inside that minute and the OHLC does not say when, so letting the same bar hit
+  the target is a bar of lookahead worth a lot of imaginary profit.
+- **A bar holding both the stop and the target is a loss.** Which came first is
+  not in the data. Those are flagged `ambiguous` in the results file so the share
+  of the record resting on that assumption can be checked.
+- **Gross and net are both shown.** Levels are tested exactly as published — what
+  the chart shows — and the round-trip spread is then deducted. A short is the
+  weak spot: MetaTrader bars are the bid and a short exits on the ask, so its
+  stop is genuinely nearer than the chart suggests; the backtester prices both
+  sides of the book, this record deducts the cost instead.
+
+The running record is `wins / losses`, the hit rate, and **total R** — because
+neither number is enough alone: 30% at 2R makes money and 60% at 0.5R does not.
+Flats are left out of the hit rate; a morning that touched neither level did not
+lose. Every result is appended to `orb-results.csv` next to the settings file, so
+the record survives a restart and opens in Excel.
+
+A paper result is not a fill. It assumes the retest limit filled at the level,
+which a fast market may not have done at all.
+
 **Get `ORB-Signals.exe`:** repo → **Actions** → **Build Signals EXE** → *Run
 workflow*, then download the `ORB-Signals-windows` artifact. Or build it on
-Windows by double-clicking `build_signals_app_windows.bat`.
+Windows by double-clicking `build_signals_app_windows.bat`. The same build
+uploads an `ORB-Signals-screenshots` artifact: a picture of each page as that
+exe renders it.
 
 It is a normal windowed app — same dark interface as KPS — with three pages:
 
-- **Signals** — connection, today's alerts, and what every instrument is doing
-  (range forming, watching, broke at 14:45, retested). "No alerts yet" and "not
-  working" are distinguishable, which they are not in a console.
-- **Settings** — instruments, range length, target, retest tolerance, and
-  **Telegram set up in the window**: paste the bot token, press **Find my chat
-  ID**, press **Send test message**. No environment variables.
-- **Activity** — every reason it gave for not alerting.
+- **Signals** — connection, today's alerts with a **Result** column that fills in
+  when the stop or target is touched, the running record, and what every
+  instrument is doing (range forming, watching, broke at 14:45, retested). "No
+  alerts yet" and "not working" are distinguishable, which they are not in a
+  console.
+- **Settings** — instruments, range length, target, retest tolerance, the paper
+  record switches, and **Telegram set up in the window**: paste the bot token,
+  press **Find my chat ID**, press **Send test message**. No environment
+  variables.
+- **Activity** — every reason it gave for not alerting, and every result.
 
 Start MetaTrader 5 and log in first; the app reads prices from it. It uses
 `MT5Feed`, which has no order methods at all, so there is no code path from this

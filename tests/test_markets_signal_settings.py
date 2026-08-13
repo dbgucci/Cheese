@@ -7,9 +7,12 @@ whether a misconfigured Telegram setup explains itself.
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
+from cheese_signals.markets import signal_settings, signals
+from cheese_signals.markets.execution import BUY
 from cheese_signals.markets.signal_settings import SignalSettings, settings_path
 from cheese_signals.markets.signals import BREAK, RETEST
 from cheese_signals.notifiers import telegram
@@ -199,3 +202,78 @@ def test_a_group_chat_is_named_by_its_title(monkeypatch):
                         lambda *a, **k: FakeResponse(payload=payload))
     chats, _ = telegram.discover_chat_ids("123:abc")
     assert chats == [{"id": "-100123", "name": "Trading group"}]
+
+
+# ------------------------------ the results file ------------------------------
+def result(symbol="US30", kind=signals.WIN, r_net=1.95, r_gross=2.0,
+           ambiguous=False):
+    return signals.Outcome(
+        symbol=symbol, direction=BUY, result=kind, entry=44010.0, stop=43990.0,
+        target=44050.0, exit_price=44050.0,
+        opened_at=datetime(2026, 3, 2, 14, 46, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 3, 2, 14, 52, tzinfo=timezone.utc),
+        risk_points=200.0, points=400.0, cost_points=10.0, r_gross=r_gross,
+        r_net=r_net, session_label="US cash equities",
+        reason="the target was reached", ambiguous=ambiguous, digits=1)
+
+
+def test_a_result_is_appended_with_a_header_on_the_first_write(tmp_path):
+    path = tmp_path / "orb-results.csv"
+    signal_settings.append_result(result(), path)
+    signal_settings.append_result(result(kind=signals.LOSS, r_net=-1.05,
+                                        r_gross=-1.0), path)
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 3, "one header, two results"
+    assert lines[0].startswith("closed_at,symbol,side,result")
+    assert "win" in lines[1] and "US30" in lines[1]
+    assert "loss" in lines[2]
+
+
+def test_the_running_record_survives_a_restart(tmp_path):
+    """A hit rate that resets whenever the app is reopened is not a hit rate."""
+    path = tmp_path / "orb-results.csv"
+    for kind, net, gross in ((signals.WIN, 1.95, 2.0), (signals.WIN, 1.95, 2.0),
+                             (signals.LOSS, -1.05, -1.0)):
+        signal_settings.append_result(result(kind=kind, r_net=net,
+                                            r_gross=gross), path)
+    tally = signal_settings.load_tally(path)
+    assert (tally.wins, tally.losses) == (2, 1)
+    assert tally.r_net == pytest.approx(2.85)
+    assert tally.win_rate == pytest.approx(2 / 3)
+
+
+def test_a_missing_results_file_is_an_empty_record_not_an_error(tmp_path):
+    tally = signal_settings.load_tally(tmp_path / "nothing.csv")
+    assert tally.resolved == 0
+    assert tally.summary() == "no results yet"
+
+
+def test_a_truncated_last_line_does_not_stop_the_app_starting(tmp_path):
+    """Killed from the taskbar mid-write. The rows that did land still count."""
+    path = tmp_path / "orb-results.csv"
+    signal_settings.append_result(result(), path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("2026-03-03 15:01,XAUUSD,BUY,wi")
+    tally = signal_settings.load_tally(path)
+    assert tally.wins == 1 and tally.resolved == 1
+
+
+def test_an_ambiguous_result_is_marked_in_the_file(tmp_path):
+    """So the share of the record that rests on the pessimistic assumption can
+    be checked rather than taken on trust."""
+    path = tmp_path / "orb-results.csv"
+    signal_settings.append_result(result(ambiguous=True), path)
+    signal_settings.append_result(result(), path)
+    assert signal_settings.load_tally(path).ambiguous == 1
+
+
+def test_tracking_off_with_result_alerts_on_is_named_as_a_contradiction():
+    s = signal_settings.SignalSettings(track_outcomes=False, alert_on_result=True)
+    assert any("no result will ever be worked out" in p for p in s.problems())
+
+
+def test_the_signal_config_carries_the_tracking_switch():
+    on = signal_settings.SignalSettings().signal_config(["US30"])
+    off = signal_settings.SignalSettings(track_outcomes=False).signal_config(["US30"])
+    assert on.track_outcomes is True
+    assert off.track_outcomes is False

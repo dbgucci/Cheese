@@ -62,6 +62,52 @@ def _visible_labels(root):
     return [w for w in root.findChildren(QLabel) if w.isVisible() and w.text()]
 
 
+def _fill_tables(window):
+    """Put realistic rows in both tables.
+
+    The empty tables prove only that the headers fit. Every cell-level clipping
+    bug -- and there was one, "14:46" rendered as "14:..." -- needs data in the
+    rows to show up, and this app's tables are empty until a market opens.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from cheese_signals.markets import signals as sig
+    from cheese_signals.markets.execution import BUY, SELL
+
+    window.nav_group.button(0).click()
+    window.feed.signal_table.setRowCount(0)
+    window.feed._result_cells.clear()
+    at = datetime(2026, 3, 2, 14, 46, tzinfo=timezone.utc)
+
+    def signal(kind, symbol, direction, entry, stop, target, digits, when):
+        return sig.Signal(
+            kind=kind, symbol=symbol, direction=direction, at=when, entry=entry,
+            stop=stop, target=target, range_low=entry - 20, range_high=entry,
+            range_points=200.0, risk_points=200.0, reward_points=400.0,
+            cost_points=12.0, session_label="US cash equities",
+            session_open=at, flat_by=at + timedelta(hours=6), reason="t",
+            digits=digits)
+
+    retest = signal(sig.RETEST, "US30", BUY, 44010.0, 43990.0, 44050.0, 1, at)
+    window.feed.add_signal(retest)
+    window.feed.add_signal(signal(sig.BREAK, "XAUUSD", SELL, 2412.40, 2418.90,
+                                  2399.40, 2, at + timedelta(minutes=9)))
+    window.feed.set_result(sig.Outcome(
+        symbol="US30", direction=BUY, result=sig.WIN, entry=44010.0,
+        stop=43990.0, target=44050.0, exit_price=44050.0, opened_at=at,
+        closed_at=at + timedelta(minutes=23), risk_points=200.0, points=400.0,
+        cost_points=12.0, r_gross=2.0, r_net=1.94,
+        session_label="US cash equities", reason="the target was reached",
+        digits=1))
+    window.feed.set_states([
+        {"symbol": "XAUUSD247", "window": "08:00-08:15", "range": "640 pts",
+         "state": "retested", "detail": "came back to 2412.40 and held it"},
+        {"symbol": "US30", "window": "14:30-14:45", "range": "200 pts",
+         "state": "range forming", "detail": ""},
+    ])
+    return retest
+
+
 # ------------------------------ the window opens ------------------------------
 def test_the_window_builds_and_has_its_three_pages(window):
     assert window.stack.count() == 3
@@ -161,20 +207,25 @@ def test_a_column_widens_for_a_header_that_does_not_fit(window, app):
         big.setPointSize(original.pointSize() + 14 if original.pointSize() > 0
                          else 30)
         header.setFont(big)
-        table.fit_headers()
+        table.fit_columns()
         _settle(app)
         widened = [c for c in range(table.columnCount())
                    if table.columnWidth(c) > before[c]]
         assert widened, "no column grew for a header that no longer fits"
     finally:
         header.setFont(original)
-        table.fit_headers()
+        table.fit_columns()
         _settle(app)
 
 
 def test_no_table_header_is_elided(window, app):
-    """"Range window" rendered as "!ange windov". QTableWidget centres header
-    text, so a column needs more width than the label alone."""
+    """"Range window" rendered as "!ange windov".
+
+    Measured with Qt's own sectionSizeHint rather than fontMetrics plus a guess
+    at the padding, because that guess is what let the first version pass here
+    and clip on Windows: the stylesheet's 14px of section padding and its
+    letter-spacing are invisible to fontMetrics and included in the hint.
+    """
     window.nav_group.button(0).click()
     _settle(app)
     narrow = []
@@ -182,15 +233,50 @@ def test_no_table_header_is_elided(window, app):
         if not table.isVisible():
             continue
         header = table.horizontalHeader()
-        metrics = header.fontMetrics()
         for col in range(table.columnCount()):
             item = table.horizontalHeaderItem(col)
             if item is None:
                 continue
-            needed = metrics.horizontalAdvance(item.text()) + 18
+            needed = header.sectionSizeHint(col)
             if header.sectionSize(col) < needed:
                 narrow.append((item.text(), header.sectionSize(col), needed))
     assert not narrow, f"elided headers: {narrow}"
+
+
+def test_no_cell_is_elided_once_the_tables_have_rows(window, app):
+    """The headers fitting proves nothing about the values under them: 70px held
+    "Time" and elided "14:46" to "14:...", because a cell carries 14px of
+    stylesheet padding on each side that fontMetrics cannot see."""
+    _fill_tables(window)
+    _settle(app)
+    narrow = []
+    for table in (window.feed.signal_table, window.feed.state_table):
+        stretch = table._stretch
+        for col in range(table.columnCount()):
+            if col == stretch:
+                continue           # takes the slack; its text is allowed to wrap out
+            needed = table.sizeHintForColumn(col)
+            if table.columnWidth(col) < needed:
+                texts = [table.item(r, col).text() for r in range(table.rowCount())
+                         if table.item(r, col) is not None]
+                narrow.append((texts, table.columnWidth(col), needed))
+    assert not narrow, f"elided cells: {narrow}"
+
+
+def test_a_result_lands_on_the_row_of_the_entry_it_belongs_to(window, app):
+    """Rows are inserted at the top, so a row index recorded when the retest
+    fired points at a later signal by the time the result arrives."""
+    _fill_tables(window)
+    _settle(app)
+    table = window.feed.signal_table
+    rows = {}
+    for r in range(table.rowCount()):
+        rows[(table.item(r, 1).text(), table.item(r, 2).text())] = r
+    retest_row = rows[("RETEST", "US30")]
+    assert "WIN" in table.item(retest_row, 8).text()
+    for (stage, _symbol), r in rows.items():
+        if stage != "RETEST":
+            assert table.item(r, 8).text() in ("", None) or not table.item(r, 8).text()
 
 
 # ------------------------------ controls are usable ------------------------------

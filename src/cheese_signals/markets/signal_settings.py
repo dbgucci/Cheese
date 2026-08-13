@@ -21,6 +21,9 @@ from ..paths import data_dir
 from . import orb
 
 SETTINGS_FILE = "orb-signals.json"
+# CSV rather than JSON: the point of the results file is that it opens in Excel
+# so the record can be sorted and totalled without this app.
+RESULTS_FILE = "orb-results.csv"
 
 DEFAULT_SYMBOLS = ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
                    "EURUSD", "GBPUSD", "USDJPY"]
@@ -44,6 +47,11 @@ class SignalSettings:
     telegram_enabled: bool = True
     alert_on_break: bool = True
     alert_on_retest: bool = True
+    alert_on_result: bool = True
+
+    # --- the paper record
+    track_outcomes: bool = True
+    log_results: bool = True
 
     # --- connection
     terminal_path: Optional[str] = None
@@ -89,6 +97,7 @@ class SignalSettings:
             retest_tolerance_fraction=self.retest_tolerance_fraction,
             apply_filters=self.apply_filters,
             per_symbol_range_minutes=False,
+            track_outcomes=self.track_outcomes,
         )
 
     def problems(self) -> list[str]:
@@ -106,6 +115,9 @@ class SignalSettings:
         if not self.alert_on_break and not self.alert_on_retest:
             out.append("both alert types are switched off, so nothing will ever "
                        "be sent")
+        if self.alert_on_result and not self.track_outcomes:
+            out.append("results are set to be alerted but outcome tracking is "
+                       "off, so no result will ever be worked out")
         return out
 
     # ------------------------------------------------------------ storage
@@ -132,3 +144,85 @@ class SignalSettings:
 
 def settings_path() -> Path:
     return data_dir() / SETTINGS_FILE
+
+
+def results_path() -> Path:
+    return data_dir() / RESULTS_FILE
+
+
+RESULT_COLUMNS = ["closed_at", "symbol", "side", "result", "entry", "stop",
+                  "target", "exit", "risk_points", "points", "cost_points",
+                  "r_gross", "r_net", "minutes_held", "ambiguous", "session",
+                  "opened_at", "reason"]
+
+
+def append_result(outcome, path: Optional[Path] = None) -> Path:
+    """Add one finished paper trade to the results file.
+
+    Appended per result rather than written at shutdown: an app that is closed
+    by the taskbar, or that crashes, never gets a clean shutdown, and a record
+    that only survives a graceful exit is not a record.
+    """
+    import csv
+
+    path = path or results_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        if new:
+            writer.writerow(RESULT_COLUMNS)
+        writer.writerow([
+            f"{outcome.closed_at:%Y-%m-%d %H:%M}", outcome.symbol, outcome.side,
+            outcome.result, f"{outcome.entry:.{outcome.digits}f}",
+            f"{outcome.stop:.{outcome.digits}f}",
+            f"{outcome.target:.{outcome.digits}f}",
+            f"{outcome.exit_price:.{outcome.digits}f}",
+            f"{outcome.risk_points:.0f}", f"{outcome.points:.0f}",
+            f"{outcome.cost_points:.0f}", f"{outcome.r_gross:.3f}",
+            f"{outcome.r_net:.3f}", f"{outcome.minutes_held:.0f}",
+            int(outcome.ambiguous), outcome.session_label,
+            f"{outcome.opened_at:%Y-%m-%d %H:%M}", outcome.reason,
+        ])
+    return path
+
+
+def load_tally(path: Optional[Path] = None):
+    """Rebuild the running record from the results file.
+
+    So a restart does not reset the hit rate to zero, which would make the
+    number meaningless on any day the app is reopened. Rows that cannot be
+    parsed are skipped rather than raising: a truncated last line from a kill
+    signal must not stop the app starting.
+    """
+    import csv
+
+    from .signals import FLAT, LOSS, Tally, WIN
+
+    tally = Tally()
+    path = path or results_path()
+    if not path.exists():
+        return tally
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                result = (row.get("result") or "").strip().lower()
+                if result not in (WIN, LOSS, FLAT):
+                    continue
+                try:
+                    r_net = float(row["r_net"])
+                    r_gross = float(row["r_gross"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if result == WIN:
+                    tally.wins += 1
+                elif result == LOSS:
+                    tally.losses += 1
+                else:
+                    tally.flats += 1
+                tally.r_net += r_net
+                tally.r_gross += r_gross
+                tally.ambiguous += int((row.get("ambiguous") or "0").strip() == "1")
+    except OSError:
+        return Tally()
+    return tally

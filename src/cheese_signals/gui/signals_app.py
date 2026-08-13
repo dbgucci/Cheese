@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -52,7 +53,8 @@ from .. import paths
 from ..markets import signals as sig
 from ..markets.clock import session_for
 from ..markets.execution import BUY
-from ..markets.signal_settings import SignalSettings, settings_path
+from ..markets.signal_settings import (SignalSettings, append_result,
+                                       load_tally, results_path, settings_path)
 from . import theme
 from .branding import app_icon
 from .common import (card, cell, form_grid, form_note, form_row,
@@ -84,6 +86,7 @@ class SignalWorker(QObject):
     connect_failed = Signal(str)
     resolved = Signal(list, list)
     signal_found = Signal(object)
+    outcome_found = Signal(object)
     note = Signal(str)
     running_changed = Signal(bool)
     states = Signal(list)
@@ -217,6 +220,11 @@ class SignalWorker(QObject):
             return
         for signal in self._bot.cycle():
             self.signal_found.emit(signal)
+        # After the signals, because a retest and its result can land in the
+        # same cycle when the bot starts late, and the result reads as nonsense
+        # arriving before the entry it belongs to.
+        for outcome in self._bot.take_outcomes():
+            self.outcome_found.emit(outcome)
         self._drain_notes()
         self.states.emit(self._state_rows())
 
@@ -268,6 +276,7 @@ class FeedPage(QWidget):
     def __init__(self, window: "SignalsWindow"):
         super().__init__()
         self.window = window
+        self._result_cells: dict[tuple, object] = {}
         root = page_layout(self)
 
         self.connect_btn = QPushButton("Connect")
@@ -280,16 +289,19 @@ class FeedPage(QWidget):
 
         root.addLayout(page_header(
             "Signals",
-            "Marks the first 15 minutes after each market's open, then alerts on "
-            "the break and again on the retest. It never places an order.",
+            "Marks the first 15 minutes after each market's open, alerts on the "
+            "break and again on the retest, then follows the retest to its stop "
+            "or target and records the result. It never places an order.",
             [self.connect_btn, self.start_btn]))
 
         self.tile_watching = StatTile("Watching")
         self.tile_breaks = StatTile("Breaks today")
         self.tile_retests = StatTile("Retests today")
+        self.tile_record = StatTile("Record")
         self.tile_alerts = StatTile("Telegram")
         root.addWidget(StatStrip([self.tile_watching, self.tile_breaks,
-                                  self.tile_retests, self.tile_alerts]))
+                                  self.tile_retests, self.tile_record,
+                                  self.tile_alerts]))
 
         broker_card, broker_lay = card("Data source")
         self.broker_text = QLabel("Not connected.")
@@ -301,10 +313,16 @@ class FeedPage(QWidget):
         root.addWidget(broker_card)
 
         signals_card, signals_lay = card("Today's signals")
+        # Result is the last column and starts empty: a retest fills it in when
+        # its stop or target is touched, which is the only way to see whether the
+        # alerts are worth acting on.
+        # Range takes the slack rather than Result: a stretched last column puts
+        # its centred header in the middle of the empty half of the table, a
+        # screen away from the values under it.
         self.signal_table = table(
             ["Time", "Stage", "Instrument", "Side", "Entry", "Stop", "Target",
-             "Range"], stretch=7,
-            widths={0: 70, 1: 80, 2: 110, 3: 60, 4: 95, 5: 95, 6: 95})
+             "Range", "Result"], stretch=7,
+            widths={0: 70, 1: 80, 2: 110, 3: 60, 4: 95, 5: 95, 6: 95, 8: 150})
         self.signal_table.setMinimumHeight(180)
         signals_lay.addWidget(self.signal_table)
         root.addWidget(signals_card, 1)
@@ -332,6 +350,39 @@ class FeedPage(QWidget):
         for c, value in enumerate(values):
             paint = colour if c == 1 else side_colour if c == 3 else None
             self.signal_table.setItem(row, c, cell(value, paint, mono=c >= 4))
+        pending = cell("running" if signal.kind == sig.RETEST else "",
+                       theme.TEXT_FAINT)
+        self.signal_table.setItem(row, 8, pending)
+        if signal.kind == sig.RETEST:
+            # The item, not the row index: rows are inserted at the top, so an
+            # index recorded now points at someone else's signal by the time the
+            # result arrives. Qt moves the item with its row.
+            self._result_cells[(signal.symbol, signal.at)] = pending
+        self.signal_table.fit_columns()
+
+    def set_result(self, outcome) -> None:
+        colour = (theme.BUY if outcome.result == sig.WIN
+                  else theme.SELL if outcome.result == sig.LOSS
+                  else theme.TEXT_MUTED)
+        item = self._result_cells.pop((outcome.symbol, outcome.opened_at), None)
+        text = f"{outcome.result.upper()} {outcome.r_net:+.2f}R"
+        if item is None:
+            # No matching row: the app was started after the entry alert went
+            # out, or the table was cleared. The result still belongs on screen.
+            self.signal_table.insertRow(0)
+            for c, value in enumerate(
+                    [f"{outcome.closed_at:%H:%M}", "RESULT", outcome.symbol,
+                     outcome.side, f"{outcome.entry:.{outcome.digits}f}",
+                     f"{outcome.stop:.{outcome.digits}f}",
+                     f"{outcome.target:.{outcome.digits}f}", ""]):
+                self.signal_table.setItem(0, c, cell(value, mono=c >= 4))
+            self.signal_table.setItem(0, 8, cell(text, colour, mono=True))
+            self.signal_table.fit_columns()
+            return
+        item.setText(text)
+        item.setForeground(QColor(colour))
+        item.setToolTip(outcome.format())
+        self.signal_table.fit_columns()
 
     def set_states(self, rows: list[dict]) -> None:
         self.state_table.setRowCount(len(rows))
@@ -345,6 +396,7 @@ class FeedPage(QWidget):
                 self.state_table.setItem(
                     r, c, cell(value, tint if c in (0, 3) else None,
                                mono=c in (1, 2)))
+        self.state_table.fit_columns()
 
 
 class SettingsPage(QWidget):
@@ -449,8 +501,46 @@ class SettingsPage(QWidget):
         self.alert_retest = QCheckBox()
         self.alert_retest.setChecked(s.alert_on_retest)
         r = form_row(grid, r, "Alert on the retest", self.alert_retest)
+        self.alert_result = QCheckBox()
+        self.alert_result.setChecked(s.alert_on_result)
+        r = form_row(grid, r, "Alert on the result (win or loss)",
+                     self.alert_result,
+                     "Sent when the retest's stop or target is touched.")
         tg_lay.addLayout(grid)
         root.addWidget(tg_card)
+
+        # ------------------------------------------------------------ results
+        res_card, res_lay = card("The paper record")
+        res_lay.addWidget(self._hint(
+            "The retest is the entry, so it can be scored: the bars are followed "
+            "until the suggested stop or target is touched, and the result is "
+            "recorded. Nothing is placed and nothing is risked — this is a record "
+            "of how the alerts would have done.\n"
+            "A bar that contains both the stop and the target counts as a loss, "
+            "because minute data cannot say which came first. Results are shown "
+            "gross and net of the spread."))
+        grid = form_grid()
+        r = 0
+        self.track_outcomes = QCheckBox()
+        self.track_outcomes.setChecked(s.track_outcomes)
+        r = form_row(grid, r, "Follow each retest to its stop or target",
+                     self.track_outcomes)
+
+        self.log_results = QCheckBox()
+        self.log_results.setChecked(s.log_results)
+        r = form_row(grid, r, "Keep a results file", self.log_results,
+                     f"A row per result in {results_path()}, so the record "
+                     f"survives a restart and opens in Excel.")
+
+        open_results = QPushButton("Open results file")
+        open_results.setObjectName("Ghost")
+        open_results.clicked.connect(self.open_results)
+        results_row = QHBoxLayout()
+        results_row.addWidget(open_results)
+        results_row.addStretch(1)
+        form_row(grid, r, "The record so far", results_row)
+        res_lay.addLayout(grid)
+        root.addWidget(res_card)
 
         # ---------------------------------------------------------- strategy
         st_card, st_lay = card("Strategy")
@@ -586,6 +676,9 @@ class SettingsPage(QWidget):
         s.telegram_chat_id = self.tg_chat.text().strip()
         s.alert_on_break = self.alert_break.isChecked()
         s.alert_on_retest = self.alert_retest.isChecked()
+        s.alert_on_result = self.alert_result.isChecked()
+        s.track_outcomes = self.track_outcomes.isChecked()
+        s.log_results = self.log_results.isChecked()
         s.range_minutes = self.range_minutes.value()
         s.target_r = self.target_r.value()
         s.retest_tolerance_fraction = self.tolerance.value() / 100.0
@@ -603,7 +696,20 @@ class SettingsPage(QWidget):
                                 "\n\n".join(f"• {p}" for p in problems))
         s.save()
         self.window.refresh_alert_tile()
+        self.window.refresh_record_tile()
         self.window.set_status(f"Saved to {settings_path()}")
+
+    def open_results(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        path = results_path()
+        if not path.exists():
+            self.window.set_status(
+                f"No results yet — the file appears at {path} after the first "
+                f"retest reaches its stop or target.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 class ActivityPage(QWidget):
@@ -657,6 +763,9 @@ class SignalsWindow(QMainWindow):
         self._running = False
         self._breaks = 0
         self._retests = 0
+        # Loaded from the results file rather than started at zero: a hit rate
+        # that resets every time the app is reopened is not a hit rate.
+        self.tally = load_tally()
 
         self.worker = SignalWorker(self.settings)
         self.worker.start_thread()
@@ -688,6 +797,7 @@ class SignalsWindow(QMainWindow):
         w.connect_failed.connect(self._on_connect_failed)
         w.resolved.connect(self._on_resolved)
         w.signal_found.connect(self._on_signal)
+        w.outcome_found.connect(self._on_outcome)
         w.note.connect(self.activity.add)
         w.running_changed.connect(self._on_running)
         w.states.connect(self.feed.set_states)
@@ -698,6 +808,7 @@ class SignalsWindow(QMainWindow):
         self.clock_timer.start(1000)
 
         self.refresh_alert_tile()
+        self.refresh_record_tile()
         self.set_status("Start MetaTrader 5, log in, then press Connect.")
         self.worker.post("connect")
 
@@ -814,6 +925,25 @@ class SignalsWindow(QMainWindow):
                                         "" if ready else "set it up in Settings",
                                         theme.BUY if ready else None)
 
+    def refresh_record_tile(self) -> None:
+        """Wins and losses, with total R beside them.
+
+        Both, because neither is enough on its own: a 30% hit rate at 2R makes
+        money and a 60% one at 0.5R does not.
+        """
+        tally = self.tally
+        if not self.settings.track_outcomes:
+            self.feed.tile_record.set_value("off", "switch it on in Settings")
+            return
+        if not tally.resolved:
+            self.feed.tile_record.set_value("--", "results appear here")
+            return
+        accent = (theme.BUY if tally.r_net > 0
+                  else theme.SELL if tally.r_net < 0 else None)
+        self.feed.tile_record.set_value(
+            f"{tally.wins}W / {tally.losses}L",
+            f"{tally.win_rate * 100:.0f}%  ·  {tally.r_net:+.2f}R net", accent)
+
     # ------------------------------------------------------------ actions
     def toggle_running(self) -> None:
         self.worker.post("stop" if self._running else "start")
@@ -855,17 +985,43 @@ class SignalsWindow(QMainWindow):
 
         if not self.settings.wants(signal.kind):
             return
+        self._alert(signal.format(), signal.one_line())
+
+    def _on_outcome(self, outcome) -> None:
+        """A paper trade finished: the entry alert's row gets its verdict."""
+        self.feed.set_result(outcome)
+        self.tally.add(outcome)
+        self.refresh_record_tile()
+
+        if self.settings.log_results:
+            try:
+                append_result(outcome)
+            except OSError as exc:
+                self.activity.add(f"could not write to the results file: {exc}")
+
+        if not self.settings.alert_on_result:
+            self.activity.add(outcome.one_line())
+            return
+        self._alert(f"{outcome.format()}\n\nRecord: {self.tally.summary()}",
+                    outcome.one_line())
+
+    def _alert(self, body: str, log_line: str) -> None:
+        """Send one Telegram message and say in the log what became of it.
+
+        Shared by the entry alerts and the results so there is one place where
+        "Telegram is not set up" is explained, rather than two that can drift.
+        """
         if not self.settings.telegram_ready:
-            self.activity.add(f"{signal.one_line()}  (Telegram is not set up, so "
-                              f"this was not sent)")
+            self.activity.add(f"{log_line}  (Telegram is not set up, so this was "
+                              f"not sent)")
             return
         from ..notifiers import TelegramNotifier
 
-        ok, err = TelegramNotifier(self.settings.telegram_token,
-                                   self.settings.telegram_chat_id).send_verbose(
-            signal.format())
-        self.activity.add(signal.one_line() + ("  → sent" if ok
-                                               else f"  → Telegram failed: {err}"))
+        ok, err = TelegramNotifier(
+            self.settings.telegram_token,
+            self.settings.telegram_chat_id).send_verbose(body)
+        self.activity.add(log_line + ("  → sent" if ok
+                                      else f"  → Telegram failed: {err}"))
 
     def _on_running(self, running: bool) -> None:
         self._running = running
