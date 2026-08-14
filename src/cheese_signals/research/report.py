@@ -166,6 +166,17 @@ def mining(report: MiningReport) -> str:
         f"Payout {payout.rate:.0%}  ->  break-even win rate "
         f"{payout.breakeven:.2%}"
     )
+
+    if report.insufficient_data:
+        lines.append("")
+        lines.append(f"  RESULT: {report.verdict}")
+        lines.append("")
+        lines.append(
+            "  Nothing was searched here, so read this as a gap in the data,"
+        )
+        lines.append("  not as a finding about the feed.")
+        return "\n".join(lines)
+
     tr, va, te = report.split_sizes
     lines.append(
         f"Split (chronological): train {tr:,} / validate {va:,} / test {te:,} bars"

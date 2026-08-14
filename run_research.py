@@ -71,8 +71,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-bars",
         type=int,
-        default=2000,
-        help="Skip assets with fewer candles than this (default 2000).",
+        default=1000,
+        help=(
+            "Skip assets with fewer candles than this (default 1000). The "
+            "randomness tests are informative well below the threshold that "
+            "pattern mining needs, so a small pair still earns a verdict."
+        ),
     )
     parser.add_argument(
         "--min-samples",

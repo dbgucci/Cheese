@@ -136,6 +136,8 @@ class MiningReport:
     n_passed_significance: int = 0
     findings: list[Candidate] = field(default_factory=list)
     split_sizes: tuple[int, int, int] = (0, 0, 0)
+    insufficient_data: bool = False
+    bars_needed: int = 0
 
     @property
     def confirmed(self) -> list[Candidate]:
@@ -143,6 +145,16 @@ class MiningReport:
 
     @property
     def verdict(self) -> str:
+        # "Not enough data to look" and "looked and found nothing" are
+        # different results, and reporting the first as the second would
+        # overstate what the run established.
+        if self.insufficient_data:
+            return (
+                f"Not enough data to mine: {self.n_bars:,} bars, and a "
+                f"meaningful search needs about {self.bars_needed:,}. This is "
+                "not evidence that no edge exists -- it is evidence that this "
+                "sample cannot answer the question."
+            )
         if not self.findings:
             return (
                 f"{self.n_candidates_tested:,} rules tested, none survived "
@@ -176,7 +188,11 @@ def mine_asset(
     payout = payout or Payout()
     report = MiningReport(asset=asset, n_bars=len(candles), payout=payout)
 
-    if len(candles) < min_samples * 3:
+    # The training split is 60% of the bars, and a rule needs min_samples
+    # observations inside it before it can be scored at all.
+    report.bars_needed = int(min_samples * 3 / train_frac)
+    if len(candles) < report.bars_needed:
+        report.insufficient_data = True
         return report
 
     raw = feat.clip_streak(feat.compute(candles))
