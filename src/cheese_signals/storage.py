@@ -209,6 +209,13 @@ class Journal:
             cur = self._conn.execute("SELECT COUNT(*) FROM candles")
         return int(cur.fetchone()[0])
 
+    def candle_counts_by_asset(self) -> dict[str, int]:
+        """Bars held per asset. Used to report how much history exists yet."""
+        cur = self._conn.execute(
+            "SELECT asset, COUNT(*) FROM candles GROUP BY asset"
+        )
+        return {str(row[0]): int(row[1]) for row in cur.fetchall()}
+
     def load_candles(self, asset: str, limit: int = 5000):
         import pandas as pd
 

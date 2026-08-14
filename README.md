@@ -226,6 +226,38 @@ progress bar. `test_features_never_look_ahead` asserts the third necessary
 property directly: features at bar *i* do not change when future bars are
 deleted.
 
+### Recording enough data to answer the question
+
+The first real research run found the binding constraint, and it was not
+the algorithm. The archive held 3.8 days of candles per pair. Here is what
+each kind of rule needs before a *single* hypothesis becomes measurable —
+200 observations inside a 60% training split:
+
+| Rule family | Bars needed | Continuous days |
+|---|---|---|
+| whole-feed (e.g. `streak=+2 -> PUT`) | 333 | 0.2 |
+| hour-of-day (e.g. `hour=14 -> CALL`) | 8,000 | 5.6 |
+| hour × direction | 16,000 | 11.1 |
+| hour × volatility bucket | 40,000 | 27.8 |
+
+So "which hours are best" was not answered by that run — it was not
+*testable*. `watch` mode cannot close the gap either: it is a trading loop
+that skips low-liquidity sessions, which on a 24/7 OTC feed discards
+exactly the hours nobody has data for.
+
+`run_recorder.py` records and nothing else:
+
+```bash
+python run_recorder.py            # default watchlist, runs until stopped
+python run_recorder.py --status   # how much history exists, and what it can test
+```
+
+On Windows, `record_windows.bat`. It records every asset from one shared
+connection, keeps every candle including weekends and dead hours, and
+reconnects with per-asset exponential backoff rather than exiting — a
+fortnight-long run will meet a dropped socket, and a process that dies at
+3am quietly costs a week.
+
 ### The number that ends most arguments
 
 Detecting a genuine 55% win rate against a 52.08% break-even, at 80% power,
@@ -507,6 +539,7 @@ src/cheese_signals/
   bot.py              CLI (backtest / lab / watch)
   data/               synthetic, csv, pocket_option feeds
   research/           does an edge exist at all? (run before trusting one)
+    recorder.py       records candles continuously, so there is data to mine
     stats.py          payout economics, exact binomial tests, BH correction
     randomwalk.py     four tests for whether a feed is predictable at all
     dataset.py        every recorded candle, from the journal and CSVs
@@ -522,7 +555,9 @@ src/cheese_signals/
 tests/                pytest suite
 config.example.yaml   copy to config.yaml for live `watch` mode
 run_research.py       CLI for the research package
+run_recorder.py       CLI for the candle recorder
 research_windows.bat  one-click research run on Windows
+record_windows.bat    one-click recorder on Windows
 ```
 
 ## Tests
