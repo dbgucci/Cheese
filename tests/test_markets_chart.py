@@ -154,3 +154,22 @@ def test_the_chart_is_not_blank():
                 for x in range(0, image.width(), 7)
                 for y in range(0, image.height(), 7)}
     assert len(distinct) > 6, "a chart with fewer than seven colours drew nothing"
+
+
+def test_the_application_it_creates_can_still_carry_the_window():
+    """Qt allows exactly one application object, whoever makes it first.
+
+    Drawing a chart before opening a window is an ordinary order of events, and
+    creating the graphics-only QGuiApplication here left the window with an
+    application that has no setStyleSheet -- every layout test in the suite
+    errored out, but only when the chart tests happened to run first. Local runs
+    order them the other way, so this passed locally and failed in CI.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    import cheese_signals.markets.chart as mod
+
+    app = mod._ensure_app()
+    assert QGuiApplication.instance() is app
+    assert hasattr(app, "setStyleSheet"), \
+        "a window created after a chart cannot be styled"

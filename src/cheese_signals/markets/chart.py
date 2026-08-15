@@ -73,11 +73,19 @@ _app = None
 
 
 def _ensure_app():
-    """A QGuiApplication has to exist before any QImage or QFont is made.
+    """An application object has to exist before any QImage or QFont is made.
 
     The windowed app already has one. The console bot does not, so one is made
     offscreen -- which needs no display, and is why a headless machine can still
     produce chart images.
+
+    A **QApplication** rather than the QGuiApplication this technically needs.
+    Qt allows only one, whoever creates it, and the widget layer needs the
+    widget version: creating the smaller one here left the window unable to take
+    a stylesheet, because by then the only application object in the process was
+    one without ``setStyleSheet``. Drawing a chart before opening a window is a
+    perfectly ordinary order of events, so the one that is created has to be the
+    one that serves both.
     """
     global _app
     try:
@@ -92,7 +100,12 @@ def _ensure_app():
     if existing is not None:
         return existing
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    _app = QGuiApplication([])
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        _app = QApplication([])
+    except ImportError:             # pragma: no cover - a Qt build without widgets
+        _app = QGuiApplication([])
     return _app
 
 
