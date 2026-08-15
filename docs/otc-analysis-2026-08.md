@@ -91,3 +91,50 @@ Trades needed to establish it beats break-even at 80% power:
 
 At 1.95% of bars taken, 5,500 trades is roughly two years of continuous
 running. That is the actual cost of proving a 54% edge at this sample rate.
+
+---
+
+# RSI, Bollinger Bands and MACD, tested directly
+
+The battery above tested the series and the impulse strategy's own features.
+It did not test the three most widely used indicators, so this does, across a
+grid of thresholds rather than one conventional setting -- and then across
+every pair and triple of the strongest conditions, because the usual defence
+of an indicator that fails alone is that it needs confluence.
+
+**3,326 hypotheses. Best training result 59.4%. Zero survived multiplicity
+correction. Every one of the top 25 collapsed on the holdout.**
+
+| rule | train | holdout |
+|---|---|---|
+| bb50 + bb14 upper break + above EMA200 | 0.5940 (n=266) | 0.5115 (n=131) |
+| bb20 + bb50 lower revert + RSI21<40 | 0.5899 (n=178) | 0.4848 (n=99) |
+| bb20 + RSI9<30 + bb50 lower revert | 0.5838 (n=173) | 0.5000 (n=96) |
+| bb20 + bb14 squeeze + MACD hist up | 0.5796 (n=157) | 0.5352 (n=71) |
+| bb20 + bb14 squeeze down + below EMA200 | 0.5767 (n=189) | 0.4074 (n=108) |
+
+## The textbook rules on their own
+
+| rule | train | holdout | p(>50%) |
+|---|---|---|---|
+| RSI14 < 30 | 0.5274 | 0.5046 | 0.47 |
+| RSI14 > 70 | 0.4636 | 0.4725 | 0.79 |
+| RSI7 < 25 | 0.5098 | 0.4951 | 0.59 |
+| RSI21 < 30 | 0.5375 | 0.4530 | 0.87 |
+| Bollinger lower touch, revert | 0.5394 | 0.4852 | 0.70 |
+| Bollinger upper touch, revert | 0.4863 | 0.4931 | 0.61 |
+| Bollinger squeeze, up | 0.5152 | 0.4528 | 0.97 |
+| MACD cross up | 0.4558 | 0.4397 | 0.94 |
+| MACD histogram up | 0.5060 | 0.5205 | 0.04 |
+| Price above EMA200 | 0.5098 | 0.4995 | 0.53 |
+| EMA9 over EMA21 | 0.5050 | 0.4974 | 0.60 |
+
+**Mean holdout win rate across every textbook rule: 0.4875.** One of
+twenty-four clears the 52.08% break-even, and that one (MACD histogram up,
+0.5205) is *below* it.
+
+Across all 127 single rules the correlation between training and holdout win
+rate is +0.228, mean training 0.5007 against mean holdout 0.4940. Indicators
+do not merely fail to predict this series; picking the ones that looked best
+in training makes the holdout slightly worse than picking at random, which is
+the signature of fitting noise.
