@@ -92,6 +92,7 @@ class Recorder:
         history_bars: int = 120,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = _default_now,
+        stale_after_seconds: float = 600.0,
     ):
         if not assets:
             raise ValueError("recorder needs at least one asset")
@@ -102,6 +103,9 @@ class Recorder:
         self.history_bars = history_bars
         self._sleep = sleep
         self._now = now
+        self.stale_after_seconds = stale_after_seconds
+        self._last_any_write: Optional[datetime] = None
+        self._last_stale_warning: Optional[datetime] = None
 
         self.stats = RecorderStats(started_at=now())
         self._feeds: dict[str, object] = {}
@@ -178,10 +182,42 @@ class Recorder:
                 stat = self.stats.stat(asset)
                 stat.written += count
                 stat.last_write = self._now()
+                self._last_any_write = stat.last_write
                 written += count
 
         self.stats.polls += 1
         return written
+
+    def stale_warning(self) -> Optional[str]:
+        """Warn when nothing has been recorded for a long time.
+
+        The likeliest cause on a multi-week run is an expired
+        ``POCKET_OPTION_SSID``: session tokens do not last a month, and once
+        one lapses the recorder keeps retrying and logging politely forever
+        while writing nothing. Left unsaid, that turns "I recorded for three
+        weeks" into an empty journal discovered three weeks later.
+        """
+        now = self._now()
+        reference = self._last_any_write or self.stats.started_at
+        idle = (now - reference).total_seconds()
+        if idle < self.stale_after_seconds:
+            return None
+
+        # Repeat the warning periodically rather than on every poll.
+        if self._last_stale_warning is not None:
+            since = (now - self._last_stale_warning).total_seconds()
+            if since < self.stale_after_seconds:
+                return None
+
+        self._last_stale_warning = now
+        errors = sum(s.errors for s in self.stats.per_asset.values())
+        return (
+            f"WARNING: nothing recorded for {idle / 60:.0f} minutes "
+            f"({errors} feed error(s) so far).\n"
+            "  The usual cause is an expired POCKET_OPTION_SSID. Log in to "
+            "pocketoption.com,\n"
+            "  copy a fresh session id, set it, and restart the recorder."
+        )
 
     def run(self, max_polls: Optional[int] = None, status_every: int = 20) -> RecorderStats:
         """Poll until stopped. ``max_polls`` bounds it, for tests."""
@@ -193,8 +229,13 @@ class Recorder:
             if written or self.stats.polls % status_every == 0:
                 print(
                     f"[{self._now():%Y-%m-%d %H:%M:%S}] +{written} candles | "
-                    f"{self.stats.summary()}"
+                    f"{self.stats.summary()}",
+                    flush=True,
                 )
+
+            warning = self.stale_warning()
+            if warning:
+                print(warning, file=sys.stderr, flush=True)
 
             if not self._stop and (max_polls is None or polls < max_polls):
                 self._sleep(self.poll_seconds)

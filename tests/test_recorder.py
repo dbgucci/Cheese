@@ -210,6 +210,72 @@ def test_recorder_needs_at_least_one_asset(journal):
         rec.Recorder(assets=[], feed_factory=lambda a: None, journal=journal)
 
 
+class FakeClock:
+    """Controllable clock, so staleness can be tested without waiting."""
+
+    def __init__(self, start=None):
+        self.now = start or datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now = self.now + pd.Timedelta(seconds=seconds).to_pytimedelta()
+
+
+def test_a_silent_recorder_raises_a_stale_warning(journal):
+    """An expired SSID must not look like a healthy run for three weeks."""
+    clock = FakeClock()
+    r = rec.Recorder(
+        assets=["EURUSD_otc"],
+        feed_factory=lambda a: FakeFeed(make_candles(5), fail_times=999),
+        journal=journal,
+        sleep=lambda s: None,
+        now=clock,
+        stale_after_seconds=600,
+    )
+    r.poll_once()
+    assert r.stale_warning() is None, "warned before the threshold"
+
+    clock.advance(601)
+    warning = r.stale_warning()
+    assert warning is not None
+    assert "POCKET_OPTION_SSID" in warning
+
+
+def test_the_stale_warning_does_not_repeat_every_poll(journal):
+    clock = FakeClock()
+    r = rec.Recorder(
+        assets=["EURUSD_otc"],
+        feed_factory=lambda a: FakeFeed(make_candles(5), fail_times=999),
+        journal=journal,
+        sleep=lambda s: None,
+        now=clock,
+        stale_after_seconds=600,
+    )
+    clock.advance(601)
+    assert r.stale_warning() is not None
+    assert r.stale_warning() is None, "warning repeated immediately"
+
+    clock.advance(601)
+    assert r.stale_warning() is not None, "warning never repeated"
+
+
+def test_a_healthy_recorder_never_warns(journal):
+    clock = FakeClock()
+    r = rec.Recorder(
+        assets=["EURUSD_otc"],
+        feed_factory=lambda a: FakeFeed(make_candles(5)),
+        journal=journal,
+        sleep=lambda s: None,
+        now=clock,
+        stale_after_seconds=600,
+    )
+    r.poll_once()
+    clock.advance(300)
+    assert r.stale_warning() is None
+
+
 def test_progress_report_states_what_the_sample_can_test(journal):
     journal.record_candles("EURUSD_otc", make_candles(5_000))
     text = rec.progress_report(journal)

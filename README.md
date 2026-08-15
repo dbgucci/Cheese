@@ -258,6 +258,23 @@ reconnects with per-asset exponential backoff rather than exiting — a
 fortnight-long run will meet a dropped socket, and a process that dies at
 3am quietly costs a week.
 
+For a run measured in weeks, install it as a scheduled task instead:
+
+```
+install_recorder_task.bat     (run as administrator)
+```
+
+A console window left open for four weeks does not survive four weeks — it
+survives until the first reboot, sleep, or accidental close, and the
+history stops silently at that point. The task restarts after a reboot.
+
+**Your Pocket Option session id will expire before four weeks are up.**
+When it does, the recorder keeps running and records nothing, which looks
+identical to a healthy run until you check. It prints a loud warning after
+ten idle minutes naming that as the likely cause, but the reliable check is
+`python run_recorder.py --status` every few days: if the bar count has
+stopped rising, set a fresh `POCKET_OPTION_SSID` and restart.
+
 ### The number that ends most arguments
 
 Detecting a genuine 55% win rate against a 52.08% break-even, at 80% power,
