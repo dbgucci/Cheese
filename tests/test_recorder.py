@@ -288,3 +288,39 @@ def test_progress_report_states_what_the_sample_can_test(journal):
 
 def test_progress_report_handles_an_empty_journal(journal):
     assert "No candles recorded yet" in rec.progress_report(journal)
+
+
+# ---------------------------------------------------------------------------
+# The CLI's feed wiring and credential handling
+# ---------------------------------------------------------------------------
+
+
+def test_the_live_feed_factory_is_importable():
+    """The recorder imports this on first poll; a wrong path fails at runtime.
+
+    It lives in ``cheese_signals.data``, not in ``data.pocket_option`` -- the
+    package exposes it as a lazy wrapper so backtest-only users never need
+    the optional broker client installed.
+    """
+    from cheese_signals.data import get_pocket_option_feed
+
+    assert callable(get_pocket_option_feed)
+
+
+def test_an_ssid_full_of_quotes_survives_a_save_and_load(tmp_path, monkeypatch):
+    """The real token is a JSON blob; shells mangle it, a file must not."""
+    monkeypatch.setenv("CHEESE_SIGNALS_HOME", str(tmp_path))
+    monkeypatch.delenv("POCKET_OPTION_SSID", raising=False)
+
+    import importlib
+
+    from cheese_signals import settings as settings_mod
+
+    importlib.reload(settings_mod)
+
+    token = '42["auth",{"session":"abc123","isDemo":1,"uid":22171903,"platform":2}]'
+    s = settings_mod.Settings.load()
+    s.pocket_option_ssid = token
+    s.save()
+
+    assert settings_mod.Settings.load().pocket_option_ssid == token

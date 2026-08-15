@@ -28,21 +28,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if "%POCKET_OPTION_SSID%"=="" (
-    echo ERROR: POCKET_OPTION_SSID is not set for this machine.
-    echo.
-    echo A scheduled task does not inherit variables you set in a console
-    echo window, so it must be stored at machine level:
-    echo.
-    echo    setx POCKET_OPTION_SSID "your-session-id-here" /M
-    echo.
-    echo Then close this window, open a NEW administrator prompt, and run
-    echo this script again.
-    echo.
-    pause
-    exit /b 1
-)
-
 if not exist .venv\Scripts\python.exe (
     echo Creating virtual environment...
     python -m venv .venv
@@ -60,6 +45,24 @@ if not exist .venv\Scripts\python.exe (
         pause
         exit /b 1
     )
+)
+
+REM The session id lives in settings.json, not an environment variable. It is
+REM a JSON blob full of quotes, which setx and PowerShell both mangle -- and a
+REM scheduled task running as SYSTEM would not inherit a user variable anyway.
+.venv\Scripts\python.exe -c "import sys; sys.path.insert(0,'src'); from cheese_signals import settings; sys.exit(0 if settings.Settings.load().pocket_option_ssid else 1)"
+if errorlevel 1 (
+    echo ERROR: no Pocket Option session id has been saved yet.
+    echo.
+    echo Save one first ^(this reads it from a prompt, so the shell cannot
+    echo mangle its quotes^):
+    echo.
+    echo    .venv\Scripts\python.exe run_recorder.py --set-ssid
+    echo.
+    echo Then run this script again.
+    echo.
+    pause
+    exit /b 1
 )
 
 echo Registering scheduled task "%TASKNAME%"...

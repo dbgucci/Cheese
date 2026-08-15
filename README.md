@@ -248,9 +248,17 @@ exactly the hours nobody has data for.
 `run_recorder.py` records and nothing else:
 
 ```bash
+python run_recorder.py --set-ssid # paste your session id once
 python run_recorder.py            # default watchlist, runs until stopped
 python run_recorder.py --status   # how much history exists, and what it can test
 ```
+
+The session id is stored in `settings.json` next to the journal, which is
+where the desktop app reads it from too. It is deliberately *not* an
+environment variable: the token is a JSON blob full of quotes and braces,
+so `setx POCKET_OPTION_SSID "42["auth",{...}]"` fails outright — the inner
+quotes end the argument early — and every workaround puts a live credential
+into shell history. `--set-ssid` reads it from a prompt instead.
 
 On Windows, `record_windows.bat`. It records every asset from one shared
 connection, keeps every candle including weekends and dead hours, and

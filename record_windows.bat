@@ -53,18 +53,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if "%POCKET_OPTION_SSID%"=="" (
+REM The session id lives in settings.json. It is a JSON blob full of quotes,
+REM which setx and PowerShell both mangle, so it is pasted at a prompt instead.
+python -c "import sys; sys.path.insert(0,'src'); from cheese_signals import settings; sys.exit(0 if settings.Settings.load().pocket_option_ssid else 1)"
+if errorlevel 1 (
     echo.
-    echo ERROR: POCKET_OPTION_SSID is not set.
+    echo No Pocket Option session id saved yet. Pasting one now.
     echo.
-    echo The recorder needs your Pocket Option session id. Set it for this
-    echo window and re-run:
-    echo    set POCKET_OPTION_SSID=your-session-id-here
-    echo.
-    echo To make it permanent, use the System environment variable settings.
-    echo.
-    pause
-    exit /b 1
+    python run_recorder.py --set-ssid
+    if errorlevel 1 (
+        echo.
+        echo No session id saved - cannot record without one.
+        pause
+        exit /b 1
+    )
 )
 
 echo.
