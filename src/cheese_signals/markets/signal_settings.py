@@ -16,6 +16,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ..paths import data_dir
 from . import orb
@@ -24,6 +25,9 @@ SETTINGS_FILE = "orb-signals.json"
 # CSV rather than JSON: the point of the results file is that it opens in Excel
 # so the record can be sorted and totalled without this app.
 RESULTS_FILE = "orb-results.csv"
+# Charts are kept beside the record so a subscriber who missed a signal can
+# be sent the picture of it afterwards.
+CHARTS_DIR = "orb-charts"
 
 DEFAULT_SYMBOLS = ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
                    "EURUSD", "GBPUSD", "USDJPY"]
@@ -52,6 +56,17 @@ class SignalSettings:
     # --- the paper record
     track_outcomes: bool = True
     log_results: bool = True
+
+    # --- making an alert findable later
+    # A chart image sent with each alert. The single most useful thing for
+    # someone who missed a signal and wants to see what the setup was, because
+    # it does not depend on their platform, their zone or their memory.
+    attach_chart: bool = True
+    keep_charts: bool = True
+    # An extra time zone printed in every alert, for whoever the alerts are
+    # addressed to. Empty means the three that are always there: UTC, the
+    # market's own clock and the broker's chart clock.
+    reader_timezone: str = ""
 
     # --- connection
     terminal_path: Optional[str] = None
@@ -98,6 +113,7 @@ class SignalSettings:
             apply_filters=self.apply_filters,
             per_symbol_range_minutes=False,
             track_outcomes=self.track_outcomes,
+            reader_timezone=self.reader_timezone,
         )
 
     def problems(self) -> list[str]:
@@ -115,6 +131,12 @@ class SignalSettings:
         if not self.alert_on_break and not self.alert_on_retest:
             out.append("both alert types are switched off, so nothing will ever "
                        "be sent")
+        if self.reader_timezone:
+            try:
+                ZoneInfo(self.reader_timezone)
+            except Exception:
+                out.append(f"'{self.reader_timezone}' is not a time zone name -- "
+                           f"use the Region/City form, e.g. America/New_York")
         if self.alert_on_result and not self.track_outcomes:
             out.append("results are set to be alerted but outcome tracking is "
                        "off, so no result will ever be worked out")
@@ -148,6 +170,20 @@ def settings_path() -> Path:
 
 def results_path() -> Path:
     return data_dir() / RESULTS_FILE
+
+
+def charts_dir() -> Path:
+    return data_dir() / CHARTS_DIR
+
+
+def chart_path(ref: str, at) -> Path:
+    """Where one alert's picture lives.
+
+    Named by the alert's own reference and stamped with the date, so the file a
+    subscriber asks about by name is the file on disk.
+    """
+    safe = "".join(ch for ch in ref if ch.isalnum() or ch in "-_") or "signal"
+    return charts_dir() / f"{at:%Y-%m-%d}-{safe}.png"
 
 
 RESULT_COLUMNS = ["closed_at", "symbol", "side", "result", "entry", "stop",

@@ -47,6 +47,10 @@ a = Analysis(
         "cheese_signals.markets.clock",
         "cheese_signals.markets.orb",
         "cheese_signals.markets.signals",
+        # Imported inside a function so a missing PySide6 degrades to "no
+        # chart" rather than "no app", which also means static analysis never
+        # sees it and the frozen build would ship without it.
+        "cheese_signals.markets.chart",
         "cheese_signals.markets.signal_settings",
         "cheese_signals.markets.mt5_bridge",
         "cheese_signals.markets.survey",

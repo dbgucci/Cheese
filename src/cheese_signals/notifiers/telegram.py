@@ -59,6 +59,35 @@ class TelegramNotifier:
         except requests.RequestException as exc:
             return False, str(exc)
 
+    def send_photo(self, image: bytes, caption: str = "",
+                   filename: str = "chart.png") -> tuple[bool, str]:
+        """Send an image with the alert written underneath it.
+
+        One message rather than two, because a picture and its numbers arriving
+        separately can be reordered by the network, and a chart with no prices
+        under it is a puzzle.
+
+        Telegram caps a photo caption at 1024 characters, which a full alert can
+        exceed; over that it is sent as a document, whose caption limit is the
+        same but whose failure mode is visible rather than a silent HTTP 400.
+        The caption is sent as plain text: Markdown parse failures here would
+        cost the image as well as the formatting.
+        """
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        caption = caption[:1024]
+        try:
+            resp = requests.post(
+                url,
+                data={"chat_id": self.chat_id, "caption": caption},
+                files={"photo": (filename, image, "image/png")},
+                timeout=max(self.timeout, 30),      # an upload, not a message
+            )
+            if not resp.ok:
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return True, ""
+        except requests.RequestException as exc:
+            return False, str(exc)
+
     def test(self) -> tuple[bool, str]:
         """Used by the Settings screen's 'Send test message' button."""
         ok = self.send("*KPS* connected. Notifications are working.")

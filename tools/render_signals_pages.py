@@ -83,8 +83,57 @@ def main(argv: list[str]) -> int:
               "scroll -- tall content will be compressed instead")
 
     _sample(app, win, out)
+    _chart(out)
     win.close()
     return 0
+
+
+def _chart(out) -> None:
+    """The alert image itself, which is a deliverable and not just a page.
+
+    Rendered from invented candles, for the same reason as the populated page:
+    it is empty until a market opens, so a build would otherwise never show the
+    thing subscribers actually receive.
+    """
+    from datetime import date, timedelta
+
+    import pandas as pd
+
+    from cheese_signals.markets import chart, signals as sig
+    from cheese_signals.markets.clock import SESSIONS
+    from cheese_signals.markets.execution import BUY
+
+    london = SESSIONS["london"]
+    day = date(2026, 8, 13)
+    opened = london.open_utc(day)
+
+    closes, price = [], 4336.0
+    for step in ([0.06, -0.1, 0.08, -0.05] * 4)[:15] + [0.5] * 6 + \
+                [-0.42] * 5 + [0.45] * 14:
+        price += step
+        closes.append(round(price, 2))
+    opens = [closes[0]] + closes[:-1]
+    frame = pd.DataFrame(
+        {"open": opens, "close": closes,
+         "high": [max(o, c) + 0.18 for o, c in zip(opens, closes)],
+         "low": [min(o, c) - 0.18 for o, c in zip(opens, closes)],
+         "spread": [25.0] * len(closes)},
+        index=pd.date_range(opened, periods=len(closes), freq="1min", tz="UTC"),
+    )
+    signal = sig.Signal(
+        kind=sig.RETEST, symbol="XAUUSD", direction=BUY,
+        at=opened + timedelta(minutes=24), entry=4337.0, stop=4335.0,
+        target=4341.0, range_low=4335.0, range_high=4337.0, range_points=200.0,
+        risk_points=200.0, reward_points=400.0, cost_points=25.0,
+        session_label="London", session_open=opened,
+        flat_by=opened + timedelta(hours=8, minutes=20),
+        reason="came back to the level and held it", digits=2,
+        session_tz="Europe/London", session_key="london", range_minutes=15,
+        chart_offset_minutes=180, reader_tz="America/New_York",
+        ref="XAUUSD-0813-RETEST")
+    path = out / "alert-chart.png"
+    path.write_bytes(chart.render_signal(frame, signal))
+    print(f"wrote {path}")
 
 
 def _sample(app, win, out) -> None:

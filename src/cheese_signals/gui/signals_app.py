@@ -54,7 +54,8 @@ from ..markets import signals as sig
 from ..markets.clock import session_for
 from ..markets.execution import BUY
 from ..markets.signal_settings import (SignalSettings, append_result,
-                                       load_tally, results_path, settings_path)
+                                       chart_path, charts_dir, load_tally,
+                                       results_path, settings_path)
 from . import theme
 from .branding import app_icon
 from .common import (card, cell, form_grid, form_note, form_row,
@@ -214,6 +215,36 @@ class SignalWorker(QObject):
         self._seen_notes = len(self._bot.notes)
         for line in fresh:
             self.note.emit(line)
+
+    def draw(self, item, kind: str) -> Optional[bytes]:
+        """The chart for one alert, or None with the reason logged.
+
+        Called from the window, so this runs on the GUI thread while the worker
+        thread may be replacing ``last_bars`` underneath it. That race is benign
+        and deliberate: the assignment is a whole-value swap, so the read gets
+        either the previous frame or the new one, and both are a correct picture
+        of the same instrument seconds apart. Locking would buy nothing and would
+        put the GUI thread behind a broker fetch.
+
+        Drawing is QImage-based, which Qt permits off the GUI thread too, so this
+        can be moved if a slow instrument ever makes it worth it. A failure to
+        draw must never cost the alert itself, so everything is caught.
+        """
+        if self._bot is None:
+            return None
+        bars = self._bot.last_bars.get(item.symbol)
+        if bars is None or bars.empty:
+            self.note.emit(f"no bars kept for {item.symbol}, so no chart")
+            return None
+        try:
+            from ..markets import chart
+
+            if kind == "outcome":
+                return chart.render_outcome(bars, item)
+            return chart.render_signal(bars, item)
+        except Exception as exc:                    # pragma: no cover - drawing
+            self.note.emit(f"could not draw the {item.symbol} chart: {exc}")
+            return None
 
     def _tick(self) -> None:
         if self._bot is None:
@@ -538,9 +569,48 @@ class SettingsPage(QWidget):
         results_row = QHBoxLayout()
         results_row.addWidget(open_results)
         results_row.addStretch(1)
-        form_row(grid, r, "The record so far", results_row)
+        r = form_row(grid, r, "The record so far", results_row)
         res_lay.addLayout(grid)
         root.addWidget(res_card)
+
+        # -------------------------------------------------------------- timing
+        when_card, when_lay = card("Times and charts")
+        when_lay.addWidget(self._hint(
+            "Every alert gives the same moment in three clocks: UTC, the "
+            "market's own time, and the time your MetaTrader chart is drawn in "
+            "— brokers usually run two or three hours ahead of UTC, which is "
+            "why a signal can look like it happened at a time you cannot find.\n"
+            "Add a fourth below if the people reading your alerts are mostly in "
+            "one place."))
+        grid = form_grid()
+        r = 0
+        self.reader_tz = QLineEdit(s.reader_timezone)
+        self.reader_tz.setPlaceholderText("e.g. America/New_York — leave empty for none")
+        r = form_row(grid, r, "Also show this time zone", self.reader_tz,
+                     "A zone name in Region/City form.")
+
+        self.attach_chart = QCheckBox()
+        self.attach_chart.setChecked(s.attach_chart)
+        r = form_row(grid, r, "Send a chart picture with each alert",
+                     self.attach_chart,
+                     "The candles, the opening range and the three levels, so "
+                     "the setup can be seen without finding it on a chart.")
+
+        self.keep_charts = QCheckBox()
+        self.keep_charts.setChecked(s.keep_charts)
+        r = form_row(grid, r, "Keep the pictures on this computer",
+                     self.keep_charts,
+                     "So a signal someone missed can be sent to them later.")
+
+        open_charts = QPushButton("Open charts folder")
+        open_charts.setObjectName("Ghost")
+        open_charts.clicked.connect(self.open_charts)
+        charts_row = QHBoxLayout()
+        charts_row.addWidget(open_charts)
+        charts_row.addStretch(1)
+        form_row(grid, r, "Saved pictures", charts_row)
+        when_lay.addLayout(grid)
+        root.addWidget(when_card)
 
         # ---------------------------------------------------------- strategy
         st_card, st_lay = card("Strategy")
@@ -679,6 +749,9 @@ class SettingsPage(QWidget):
         s.alert_on_result = self.alert_result.isChecked()
         s.track_outcomes = self.track_outcomes.isChecked()
         s.log_results = self.log_results.isChecked()
+        s.attach_chart = self.attach_chart.isChecked()
+        s.keep_charts = self.keep_charts.isChecked()
+        s.reader_timezone = self.reader_tz.text().strip()
         s.range_minutes = self.range_minutes.value()
         s.target_r = self.target_r.value()
         s.retest_tolerance_fraction = self.tolerance.value() / 100.0
@@ -700,14 +773,20 @@ class SettingsPage(QWidget):
         self.window.set_status(f"Saved to {settings_path()}")
 
     def open_results(self) -> None:
+        self._reveal(results_path(),
+                     "No results yet — the file appears after the first retest "
+                     "reaches its stop or target.")
+
+    def open_charts(self) -> None:
+        self._reveal(charts_dir(),
+                     "No charts yet — one is saved for each alert as it goes out.")
+
+    def _reveal(self, path, empty_message: str) -> None:
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
-        path = results_path()
         if not path.exists():
-            self.window.set_status(
-                f"No results yet — the file appears at {path} after the first "
-                f"retest reaches its stop or target.")
+            self.window.set_status(f"{empty_message} ({path})")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
@@ -985,7 +1064,7 @@ class SignalsWindow(QMainWindow):
 
         if not self.settings.wants(signal.kind):
             return
-        self._alert(signal.format(), signal.one_line())
+        self._alert(signal.format(), signal.one_line(), signal, "signal")
 
     def _on_outcome(self, outcome) -> None:
         """A paper trade finished: the entry alert's row gets its verdict."""
@@ -1003,25 +1082,56 @@ class SignalsWindow(QMainWindow):
             self.activity.add(outcome.one_line())
             return
         self._alert(f"{outcome.format()}\n\nRecord: {self.tally.summary()}",
-                    outcome.one_line())
+                    outcome.one_line(), outcome, "outcome")
 
-    def _alert(self, body: str, log_line: str) -> None:
+    def _alert(self, body: str, log_line: str, item=None, kind: str = "") -> None:
         """Send one Telegram message and say in the log what became of it.
 
         Shared by the entry alerts and the results so there is one place where
         "Telegram is not set up" is explained, rather than two that can drift.
+
+        With a chart attached it goes as a photo with the alert as its caption --
+        one message, because a picture and its numbers arriving separately can be
+        reordered and a chart with no prices under it is a puzzle. The image is
+        drawn whether or not Telegram is configured, since keeping it on disk is
+        what lets a missed signal be answered afterwards.
         """
+        image = None
+        if item is not None and self.settings.attach_chart:
+            image = self.worker.draw(item, kind)
+            if image and self.settings.keep_charts:
+                self._keep(image, item)
+
         if not self.settings.telegram_ready:
             self.activity.add(f"{log_line}  (Telegram is not set up, so this was "
                               f"not sent)")
             return
         from ..notifiers import TelegramNotifier
 
-        ok, err = TelegramNotifier(
-            self.settings.telegram_token,
-            self.settings.telegram_chat_id).send_verbose(body)
-        self.activity.add(log_line + ("  → sent" if ok
+        bot = TelegramNotifier(self.settings.telegram_token,
+                               self.settings.telegram_chat_id)
+        if image:
+            ok, err = bot.send_photo(image, body)
+            if not ok:
+                # The picture is the optional half. Losing the alert because an
+                # upload failed would be the wrong trade.
+                ok, err = bot.send_verbose(body)
+                err = f"chart upload failed, text sent instead ({err})" if ok else err
+        else:
+            ok, err = bot.send_verbose(body)
+        self.activity.add(log_line + ("  → sent" if ok and not err
+                                      else f"  → {err}" if ok
                                       else f"  → Telegram failed: {err}"))
+
+    def _keep(self, image: bytes, item) -> None:
+        ref = getattr(item, "ref", "") or item.symbol
+        at = getattr(item, "at", None) or getattr(item, "closed_at", None)
+        try:
+            path = chart_path(f"{ref}-{at:%H%M}", at)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(image)
+        except OSError as exc:
+            self.activity.add(f"could not save the chart: {exc}")
 
     def _on_running(self, running: bool) -> None:
         self._running = running

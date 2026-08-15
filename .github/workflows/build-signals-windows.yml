@@ -36,7 +36,7 @@ jobs:
       - name: Run tests
         run: |
           pip install pytest
-          pytest -q tests/test_markets_signals.py tests/test_markets_signal_settings.py tests/test_markets_orb.py tests/test_markets_clock.py tests/test_gui_signals_layout.py
+          pytest -q tests/test_markets_signals.py tests/test_markets_signal_settings.py tests/test_markets_orb.py tests/test_markets_clock.py tests/test_markets_chart.py tests/test_gui_signals_layout.py
 
       - name: Render the pages to PNGs
         # The first build's Settings page was unusable and every test passed: a

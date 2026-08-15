@@ -109,6 +109,17 @@ LOSS = "loss"
 FLAT = "flat"        # neither level was touched before the session's flat-by time
 
 
+def reference(symbol: str, day: date, kind: str) -> str:
+    """A short handle for one stage of one setup, e.g. ``US30-0813-RETEST``.
+
+    So a subscriber can ask about a specific alert, and so the result message
+    can name the entry it belongs to instead of leaving the reader to match up
+    prices from memory. Deterministic, not a counter: the same setup produces
+    the same reference on any machine that saw it.
+    """
+    return f"{symbol}-{day:%m%d}-{kind.upper()}"
+
+
 @dataclass(frozen=True)
 class Signal:
     """One stage of one setup, with everything needed to act on or judge it."""
@@ -131,6 +142,16 @@ class Signal:
     flat_by: datetime
     reason: str
     digits: int = 5
+    # Everything below is for saying *when*, to a reader whose clock is unknown.
+    # ``session_tz`` is the market's own zone, ``chart_offset_minutes`` is how
+    # far the broker's clock -- the one drawn on a MetaTrader chart -- runs ahead
+    # of UTC, and ``reader_tz`` is an optional zone the alerts are addressed to.
+    session_tz: str = "UTC"
+    session_key: str = ""
+    range_minutes: int = 15
+    chart_offset_minutes: int = 0
+    reader_tz: str = ""
+    ref: str = ""                 # e.g. US30-0813-RETEST, quotable in a message
 
     @property
     def side(self) -> str:
@@ -142,6 +163,25 @@ class Signal:
         return f"{stage}  {self.symbol}  {self.side}"
 
     @property
+    def chart_at(self) -> datetime:
+        """The candle to look at, stamped the way the platform stamps it."""
+        from .clock import chart_time
+
+        return chart_time(self.at, self.chart_offset_minutes)
+
+    def when_lines(self) -> list[str]:
+        from .clock import SESSIONS, when_lines
+
+        spec = SESSIONS.get(self.session_key)
+        if spec is None:
+            from .clock import SessionSpec
+            from datetime import time as _time
+
+            spec = SessionSpec("custom", self.session_tz, _time(0, 0),
+                               _time(23, 59), self.session_label)
+        return when_lines(self.at, spec, self.chart_offset_minutes, self.reader_tz)
+
+    @property
     def cost_multiple(self) -> float:
         return self.range_points / self.cost_points if self.cost_points > 0 else 0.0
 
@@ -149,7 +189,13 @@ class Signal:
         return f"{value:.{self.digits}f}"
 
     def format(self) -> str:
-        """The alert, written to be read on a phone in five seconds."""
+        """The alert, written to be read on a phone in five seconds.
+
+        The prices come first because they are what someone acts on. The times
+        come last and take four lines rather than one, because the reader is in
+        an unknown zone on an unknown platform and a single time is a guess about
+        both.
+        """
         lines = [
             self.headline,
             "",
@@ -163,12 +209,20 @@ class Signal:
         if self.cost_points > 0:
             lines.append(f"Spread  {self.cost_points:.0f} pts  "
                          f"(range is {self.cost_multiple:.1f}x it)")
-        lines += [
-            "",
-            f"{self.at:%H:%M} UTC  ·  {self.session_label} open "
-            f"{self.session_open:%H:%M}  ·  flat by {self.flat_by:%H:%M}",
-        ]
+        lines += ["", "WHEN"] + [f"  {line}" for line in self.when_lines()]
+        lines.append(f"  {self.session_summary()}")
+        if self.ref:
+            lines += ["", f"Ref {self.ref}"]
         return "\n".join(lines)
+
+    def session_summary(self) -> str:
+        from .clock import SESSIONS, session_window
+
+        spec = SESSIONS.get(self.session_key)
+        if spec is None:
+            return (f"{self.session_label}: flat by {self.flat_by:%H:%M} UTC")
+        return session_window(spec, spec.session_date(self.at),
+                              self.range_minutes, self.flat_by)
 
     def one_line(self) -> str:
         return (f"{self.at:%H:%M} {self.kind.upper():6s} {self.symbol} {self.side} "
@@ -205,6 +259,11 @@ class Outcome:
     reason: str
     ambiguous: bool = False       # one bar held both levels; scored as a loss
     digits: int = 5
+    session_tz: str = "UTC"
+    session_key: str = ""
+    chart_offset_minutes: int = 0
+    reader_tz: str = ""
+    ref: str = ""                 # the retest alert this is the answer to
 
     @property
     def side(self) -> str:
@@ -222,6 +281,15 @@ class Outcome:
     def _price(self, value: float) -> str:
         return f"{value:.{self.digits}f}"
 
+    def when_lines(self) -> list[str]:
+        from .clock import SESSIONS, when_lines
+
+        spec = SESSIONS.get(self.session_key)
+        if spec is None:
+            return [f"{self.closed_at:%a %d %b %Y}", f"{self.closed_at:%H:%M} UTC"]
+        return when_lines(self.closed_at, spec, self.chart_offset_minutes,
+                          self.reader_tz)
+
     def format(self) -> str:
         lines = [
             self.headline,
@@ -232,12 +300,16 @@ class Outcome:
             f"{self.cost_points:.0f}pt round trip)",
             "",
             f"{self.reason}",
-            f"Held {self.minutes_held:.0f} min  ·  closed {self.closed_at:%H:%M} UTC"
-            f"  ·  {self.session_label}",
+            f"Held {self.minutes_held:.0f} min  ·  {self.session_label}",
+            "",
+            "CLOSED",
         ]
+        lines += [f"  {line}" for line in self.when_lines()]
         if self.ambiguous:
-            lines.append("One bar held both the stop and the target; scored as a "
-                         "loss because OHLC cannot say which came first.")
+            lines += ["", "One bar held both the stop and the target; scored as a "
+                          "loss because OHLC cannot say which came first."]
+        if self.ref:
+            lines += ["", f"Ref {self.ref}"]
         return "\n".join(lines)
 
     def one_line(self) -> str:
@@ -262,6 +334,11 @@ class PaperTrade:
     point: float
     session_label: str
     digits: int = 5
+    session_tz: str = "UTC"
+    session_key: str = ""
+    chart_offset_minutes: int = 0
+    reader_tz: str = ""
+    ref: str = ""
     outcome: Optional[Outcome] = None
 
     @property
@@ -339,6 +416,12 @@ class SignalConfig:
     # Off means the day ends at the retest, exactly as it did before this
     # existed -- which is the only reason the switch is here.
     track_outcomes: bool = True
+    # An extra zone to print every time in, for whoever the alerts are addressed
+    # to. Empty means UTC, the market's own clock and the broker's chart clock,
+    # which is already three frames -- this is for when the audience is mostly in
+    # a fourth. It is not the sender's machine zone: that would be right for one
+    # person and misleading for everyone else on the channel.
+    reader_timezone: str = ""
 
     def validate(self) -> list[str]:
         out = list(self.orb.validate())
@@ -415,6 +498,7 @@ class SignalBot:
         self.tally = Tally()
         self._taken = 0
         self.notes: list[str] = []
+        self.last_bars: dict[str, pd.DataFrame] = {}
         self._said: dict[str, str] = {}
 
     # ------------------------------------------------------------- plumbing
@@ -471,7 +555,13 @@ class SignalBot:
     def _bars(self, symbol: str, now: datetime) -> pd.DataFrame:
         start = self.clock.to_server(now - timedelta(days=LOOKBACK_DAYS))
         raw = self.source.history(symbol, M1, start, self.clock.to_server(now))
-        return orb.as_utc_index(self.clock.frame_to_utc(raw)).sort_index()
+        bars = orb.as_utc_index(self.clock.frame_to_utc(raw)).sort_index()
+        # Kept so a caller can draw the setup that produced an alert. Only the
+        # last two sessions: the twenty-one days fetched for the average-daily-
+        # range filter are of no use to a chart and would hold ten thousand rows
+        # per instrument in memory all day.
+        self.last_bars[symbol] = bars.tail(2 * 1440)
+        return bars
 
     def _cfg_for(self, symbol: str) -> orb.OrbConfig:
         if not self.config.per_symbol_range_minutes:
@@ -683,7 +773,10 @@ class SignalBot:
                 stop=signal.stop, target=signal.target, opened_at=ts,
                 flat_by=signal.flat_by, risk_points=signal.risk_points,
                 cost_points=signal.cost_points, point=rng.point or 1.0,
-                session_label=spec.label, digits=digits)
+                session_label=spec.label, digits=digits, session_tz=spec.tz,
+                session_key=spec.key,
+                chart_offset_minutes=self.clock.server_offset_minutes,
+                reader_tz=self.config.reader_timezone, ref=signal.ref)
         return signal
 
     # ------------------------------------------------------------ the result
@@ -762,6 +855,9 @@ class SignalBot:
             r_net=(points - trade.cost_points) / risk,
             session_label=trade.session_label, reason=reason,
             ambiguous=ambiguous, digits=trade.digits,
+            session_tz=trade.session_tz, session_key=trade.session_key,
+            chart_offset_minutes=trade.chart_offset_minutes,
+            reader_tz=trade.reader_tz, ref=trade.ref,
         )
         trade.outcome = outcome
         self.outcomes.append(outcome)
@@ -788,6 +884,11 @@ class SignalBot:
             flat_by=spec.close_utc(day) - timedelta(
                 minutes=cfg.flat_before_close_minutes),
             reason=reason, digits=digits,
+            session_tz=spec.tz, session_key=spec.key,
+            range_minutes=cfg.range_minutes,
+            chart_offset_minutes=self.clock.server_offset_minutes,
+            reader_tz=self.config.reader_timezone,
+            ref=reference(watch.symbol, day, kind),
         )
 
     def take_outcomes(self) -> list[Outcome]:

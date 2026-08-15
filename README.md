@@ -344,8 +344,57 @@ Target  3414.00   (1200 pts)
 Range   3396.00 - 3402.00  (600 pts)
 Spread  25 pts  (range is 24.0x it)
 
-08:17 UTC  ·  London open 08:00  ·  flat by 16:20
+WHEN
+  Thu 13 Aug 2026
+  07:17 UTC
+  08:17 London — the market's own clock
+  10:17 on your MT5 chart (broker clock, UTC+3)
+  03:17 New York — your time
+  London: range 08:00-08:15, flat by 16:20 London time
+
+Ref XAUUSD-0813-RETEST
 ```
+
+#### Which 08:17? Times, for readers in unknown places
+
+A single time is a guess about the reader's zone *and* their platform, and it
+was wrong on both counts often enough to make a correct alert look broken. So
+every alert says the same instant in every frame someone might be holding:
+
+- **UTC**, the canonical one.
+- **The market's own clock**, which is where the session is defined. An earlier
+  version printed "London open 07:00" — the UTC equivalent under a London
+  label, which reads as a mistake to anyone who knows that London opens at
+  08:00. It now says 08:00, in London.
+- **The broker's chart clock.** This is the number that finds the candle. A
+  MetaTrader chart is drawn in *server* time, and most brokers run two or three
+  hours ahead of UTC, so someone scrolling to the UTC hour is looking three
+  hours from where the bar is. The offset is measured from a live tick, not
+  assumed, and the line is omitted when there is nothing to correct.
+- **One more zone of your choosing**, in Settings, for wherever your readers
+  mostly are.
+
+The date is there too, because "07:17" is ambiguous the moment anyone reviews a
+signal after the fact — which is exactly what someone who missed one does. And
+each alert carries a **reference** like `XAUUSD-0813-RETEST`, so a subscriber can
+ask about one specific signal and the result message can name the entry it
+answers.
+
+#### A picture of every setup
+
+Each alert goes out as a chart with the numbers as its caption: the candles, the
+opening range shaded, the level that broke, and entry, stop and target drawn
+across it. Someone who missed the signal can see what it was without finding it
+on their own platform, and the axis is labelled so the timing is unambiguous
+whatever their chart says.
+
+The images are kept in `orb-charts/` next to the settings file, named by the same
+reference as the alert, so a signal can be re-sent to someone who asks about it
+later.
+
+Drawn with QPainter, not a plotting library: matplotlib would have added tens of
+megabytes to an executable whose job is to send messages, and a candlestick chart
+is rectangles and lines.
 
 #### Did it work? The paper record
 

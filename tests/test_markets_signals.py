@@ -663,3 +663,71 @@ def test_a_trade_left_open_by_a_dead_session_is_not_left_open_forever():
     assert outcome.r_gross == 0.0
     assert "the feed stopped" in outcome.reason
     assert watch.done is True
+
+
+# ------------------------------ saying when ------------------------------
+#
+# The complaint that produced these: "a break came in at 12:41am, the message
+# said 07:40 UTC, London open 07:00, flat by 15:20 -- that sounds confusing to
+# me, much less the average person". It was, and one line of it was close to
+# wrong: London opens at 08:00 London time.
+def test_the_alert_gives_the_moment_in_every_clock_the_reader_might_hold():
+    # Bars stamped three hours ahead, as an EET broker delivers them -- the
+    # usual case, and the one that made the original message unfindable.
+    shifted = range_then([BREAK_BAR])
+    shifted.index = shifted.index + timedelta(minutes=180)
+    source = FakeSource(shifted)
+    bot = SignalBot(source, SignalConfig(symbols=["US30"], orb=LOOSE,
+                                         reader_timezone="America/New_York"),
+                    clock=signals.BarClock(180), specs={"US30": US30})
+    text = bot.cycle(at(16))[0].format()
+    assert "UTC" in text
+    assert "New York — the market's own clock" in text
+    assert "on your MT5 chart" in text, "the number that finds the candle"
+    assert "your time" in text
+    assert "2026" in text, "the date, or a review the next day cannot find it"
+
+
+def test_the_session_is_described_in_its_own_clock_not_in_utc():
+    """"London open 07:00" reads as a mistake to anyone who knows the market."""
+    bot, _ = make(range_then([BREAK_BAR]))
+    text = bot.cycle(at(16))[0].session_summary()
+    assert "09:30-09:45" in text, "the US cash open is 09:30 in New York"
+    assert "New York time" in text
+
+
+def test_every_alert_carries_a_reference_that_can_be_quoted_back():
+    bot, _ = make(range_then([BREAK_BAR, RETEST_BAR]))
+    first = bot.cycle(at(16))[0]
+    second = bot.cycle(at(17))[0]
+    assert first.ref == "US30-0302-BREAK"
+    assert second.ref == "US30-0302-RETEST"
+    assert first.ref in first.format()
+
+
+def test_the_result_quotes_the_entry_it_answers():
+    """So a subscriber reading "WIN +1.95R" knows which alert won."""
+    bot, _ = make(range_then([BREAK_BAR, RETEST_BAR, (44055, 44020, 44050)]))
+    run_to(bot, 18)
+    outcome = bot.outcomes[0]
+    assert outcome.ref == "US30-0302-RETEST"
+    assert outcome.ref in outcome.format()
+    assert "UTC" in outcome.format()
+
+
+def test_the_chart_time_is_absent_when_the_broker_runs_on_utc():
+    """Nothing to correct, so nothing to say. An extra line reading the same as
+    the one above it is noise that trains people to skip the block."""
+    bot, _ = make(range_then([BREAK_BAR]))
+    assert bot.clock.server_offset_minutes == 0
+    assert "MT5 chart" not in bot.cycle(at(16))[0].format()
+
+
+def test_the_bars_behind_an_alert_are_kept_so_it_can_be_drawn():
+    """A chart cannot be drawn from a signal alone, and refetching history to
+    draw one would ask the broker for the same bars twice."""
+    bot, _ = make(range_then([BREAK_BAR]))
+    bot.cycle(at(16))
+    kept = bot.last_bars["US30"]
+    assert not kept.empty
+    assert {"open", "high", "low", "close"} <= set(kept.columns)

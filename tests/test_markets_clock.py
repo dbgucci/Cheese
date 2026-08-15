@@ -5,7 +5,7 @@ builds its opening range over the wrong fifteen minutes trades happily and
 loses money for reasons no log line explains.
 """
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -175,3 +175,82 @@ def test_a_naive_frame_is_treated_as_utc_rather_than_local():
 def test_describe_says_which_way_the_offset_goes():
     assert "UTC" in BarClock(0).describe()
     assert "+3.0h" in BarClock(180).describe()
+
+
+# ------------------------------ saying when ------------------------------
+#
+# An alert that says "07:40 UTC · London open 07:00" is confusing on its own and
+# close to wrong: London opens at 08:00 London time, and printing its UTC
+# equivalent under the label "London" reads as a mistake to anyone who knows the
+# market. Both halves of that are fixed here.
+def test_the_session_open_is_stated_in_the_session_s_own_clock():
+    from cheese_signals.markets.clock import session_window
+
+    spec = SESSIONS["london"]
+    day = date(2026, 8, 13)                      # British Summer Time
+    flat = spec.close_utc(day) - timedelta(minutes=10)
+    text = session_window(spec, day, 15, flat)
+    assert "range 08:00-08:15" in text, "London opens at 08:00 in London"
+    assert "London time" in text
+
+
+def test_the_same_open_in_winter_is_still_eight_o_clock_locally():
+    """Which is the whole point of naming the zone: the UTC hour moves, the
+    market's own hour does not."""
+    from cheese_signals.markets.clock import session_window
+
+    spec = SESSIONS["london"]
+    day = date(2026, 1, 13)
+    flat = spec.close_utc(day) - timedelta(minutes=10)
+    assert "range 08:00-08:15" in session_window(spec, day, 15, flat)
+    assert spec.open_utc(date(2026, 8, 13)).hour == 7      # summer
+    assert spec.open_utc(day).hour == 8                    # winter
+
+
+def test_a_moment_is_given_in_every_clock_the_reader_might_hold():
+    from cheese_signals.markets.clock import when_lines
+
+    moment = datetime(2026, 8, 13, 7, 40, tzinfo=timezone.utc)
+    lines = when_lines(moment, SESSIONS["london"], server_offset_minutes=180,
+                       reader_tz="America/New_York")
+    joined = "\n".join(lines)
+    assert "Thu 13 Aug 2026" in joined, "the date, or a later review cannot find it"
+    assert "07:40 UTC" in joined
+    assert "08:40 London" in joined
+    assert "10:40 on your MT5 chart" in joined, "the number that finds the candle"
+    assert "03:40 New York" in joined
+
+
+def test_the_chart_time_is_the_brokers_clock_not_utc():
+    """A MetaTrader chart is drawn in server time. Someone scrolling to the UTC
+    hour on an EET broker is looking three hours from where the bar is."""
+    from cheese_signals.markets.clock import chart_time
+
+    moment = datetime(2026, 8, 13, 7, 40, tzinfo=timezone.utc)
+    assert chart_time(moment, 180).hour == 10
+    assert chart_time(moment, 0).hour == 7
+
+
+def test_a_broker_on_utc_gets_no_chart_line_because_there_is_nothing_to_say():
+    from cheese_signals.markets.clock import when_lines
+
+    moment = datetime(2026, 8, 13, 7, 40, tzinfo=timezone.utc)
+    lines = when_lines(moment, SESSIONS["london"], server_offset_minutes=0)
+    assert not any("MT5" in line for line in lines)
+
+
+def test_a_half_hour_offset_is_written_as_one():
+    from cheese_signals.markets.clock import offset_label
+
+    assert offset_label(330) == "+5:30"
+    assert offset_label(-240) == "-4"
+    assert offset_label(180) == "+3"
+
+
+def test_an_unusable_reader_zone_is_dropped_rather_than_raising():
+    """A typo in a settings field must not stop alerts going out."""
+    from cheese_signals.markets.clock import when_lines
+
+    moment = datetime(2026, 8, 13, 7, 40, tzinfo=timezone.utc)
+    lines = when_lines(moment, SESSIONS["london"], 180, reader_tz="Mars/Olympus")
+    assert any("UTC" in line for line in lines)

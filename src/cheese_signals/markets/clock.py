@@ -242,3 +242,94 @@ class BarClock:
             return "broker bar times are UTC"
         hours = self.server_offset_minutes / 60.0
         return f"broker bar times run UTC{hours:+.1f}h; corrected before use"
+
+
+# --------------------------------------------------------------------------
+# saying when, to someone whose clock you do not know
+# --------------------------------------------------------------------------
+#
+# An alert that says "07:40 UTC" is unusable to most of the people reading it.
+# They are in another zone, their platform is on a third, and the sentence that
+# followed -- "London open 07:00" -- was worse than unhelpful: London opens at
+# 08:00 *London time*, and printing its UTC equivalent under the label "London"
+# reads as a mistake to anyone who knows the market. Both of those made a
+# correct alert look wrong and made a missed setup hard to find again.
+#
+# The fix is not to pick a better single zone. There isn't one. It is to say the
+# same instant in every frame the reader might be holding, and to label each one.
+
+
+def offset_label(minutes: int) -> str:
+    """``+5:30``, ``-4``, ``+0`` -- an offset written the way people write them."""
+    sign = "-" if minutes < 0 else "+"
+    hours, mins = divmod(abs(int(minutes)), 60)
+    return f"{sign}{hours}:{mins:02d}" if mins else f"{sign}{hours}"
+
+
+def in_zone(moment_utc: datetime, tz: str) -> datetime:
+    if moment_utc.tzinfo is None:
+        moment_utc = moment_utc.replace(tzinfo=timezone.utc)
+    return moment_utc.astimezone(ZoneInfo(tz))
+
+
+def zone_name(tz: str) -> str:
+    """``Europe/London`` -> ``London``. The city is the part people recognise."""
+    return tz.rsplit("/", 1)[-1].replace("_", " ")
+
+
+def chart_time(moment_utc: datetime, server_offset_minutes: int) -> datetime:
+    """The same instant as the broker's own clock would stamp it.
+
+    This is the number that finds the candle. A MetaTrader chart is drawn in
+    server time, so on a broker running EET a 07:40 UTC signal sits on the 10:40
+    candle -- and someone scrolling back to 07:40 finds nothing, three hours from
+    where they were looking.
+    """
+    if moment_utc.tzinfo is None:
+        moment_utc = moment_utc.replace(tzinfo=timezone.utc)
+    return moment_utc + timedelta(minutes=server_offset_minutes)
+
+
+def when_lines(
+    moment_utc: datetime,
+    session: "SessionSpec",
+    server_offset_minutes: int = 0,
+    reader_tz: str = "",
+) -> list[str]:
+    """One instant, said in every frame the reader might be holding.
+
+    The date is included because "07:40" alone is ambiguous the moment anyone
+    reviews a signal after the fact, which is exactly what a subscriber does
+    when they missed one.
+    """
+    lines = [f"{moment_utc:%a %d %b %Y}"]
+    local = in_zone(moment_utc, session.tz)
+    lines.append(f"{moment_utc:%H:%M} UTC")
+    lines.append(f"{local:%H:%M} {zone_name(session.tz)} — the market's own clock")
+    if server_offset_minutes:
+        stamp = chart_time(moment_utc, server_offset_minutes)
+        lines.append(f"{stamp:%H:%M} on your MT5 chart "
+                     f"(broker clock, UTC{offset_label(server_offset_minutes)})")
+    if reader_tz:
+        try:
+            yours = in_zone(moment_utc, reader_tz)
+        except Exception:
+            return lines
+        lines.append(f"{yours:%H:%M} {zone_name(reader_tz)} — your time")
+    return lines
+
+
+def session_window(session: "SessionSpec", day: date, range_minutes: int,
+                   flat_by_utc: datetime) -> str:
+    """The session's shape in its own clock, which is where it was defined.
+
+    Printed in UTC it invites the obvious objection -- London does not open at
+    07:00 -- and the objection is right about the label and wrong about the bot,
+    which is the worst way to be misunderstood.
+    """
+    open_local = in_zone(session.open_utc(day), session.tz)
+    end_local = open_local + timedelta(minutes=range_minutes)
+    flat_local = in_zone(flat_by_utc, session.tz)
+    city = zone_name(session.tz)
+    return (f"{session.label}: range {open_local:%H:%M}-{end_local:%H:%M}, "
+            f"flat by {flat_local:%H:%M} {city} time")
