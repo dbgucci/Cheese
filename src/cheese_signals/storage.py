@@ -149,6 +149,17 @@ class Journal:
     def close(self) -> None:
         self._conn.close()
 
+    def candle_counts(self) -> dict:
+        """Bars stored per asset.
+
+        Counted in SQL rather than by tracking writes, so the number survives
+        a restart and reports what is actually on disk -- which is the number
+        that matters when the file is handed to the analysis.
+        """
+        rows = self._conn.execute(
+            "SELECT asset, COUNT(*) AS n FROM candles GROUP BY asset").fetchall()
+        return {r["asset"]: int(r["n"]) for r in rows}
+
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         try:
