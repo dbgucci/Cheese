@@ -36,7 +36,10 @@ jobs:
 
       - name: Run tests
         run: |
+          # The research package's tests need scipy. Installed here rather
+          # than as a base dependency so it stays out of the executables.
           pip install pytest
+          pip install -e ".[research]"
           pytest -q
 
       - name: Build executables

@@ -22,6 +22,11 @@ cheese-signals-app = "cheese_signals.gui:main"
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
+# The analysis package needs a statistics library. Kept optional rather than
+# required because the shipped executables never run it -- bundling scipy
+# into them would add tens of megabytes for code that only ever runs on a
+# desk, offline, against a recorded database.
+research = ["scipy>=1.11"]
 live = ["binaryoptionstoolsv2>=0.1"]
 build = ["pyinstaller>=6.3"]
 

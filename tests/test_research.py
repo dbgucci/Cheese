@@ -13,6 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# The analysis package is an optional extra (pip install -e ".[research]").
+# Skipping rather than erroring keeps a plain checkout's test run green, but
+# CI installs the extra so these actually run -- a suite that silently skips
+# its most important tests is worse than one that fails.
+pytest.importorskip("scipy", reason='install with: pip install -e ".[research]"')
+
 from cheese_signals.research import dataset, probes, study, validate
 from cheese_signals.research.probes import Finding
 
