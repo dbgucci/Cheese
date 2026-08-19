@@ -277,3 +277,37 @@ def test_the_signal_config_carries_the_tracking_switch():
     off = signal_settings.SignalSettings(track_outcomes=False).signal_config(["US30"])
     assert on.track_outcomes is True
     assert off.track_outcomes is False
+
+
+# ------------------------------ the watchlist ------------------------------
+def test_the_default_watchlist_is_stocks_indices_and_metals():
+    symbols = signal_settings.DEFAULT_SYMBOLS
+    assert {"US30", "SPX500", "NAS100"} <= set(symbols)
+    assert {"XAUUSD", "XAGUSD"} <= set(symbols)
+    assert len(symbols) == 15
+
+
+def test_no_currency_pairs_are_watched_by_default():
+    """An opening range is a bet on an opening auction. Spot FX has none -- its
+    "open" is a gradual handover of liquidity, so the first fifteen minutes are
+    not special and what comes out is mostly spread."""
+    pairs = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP"}
+    assert not pairs & set(signal_settings.DEFAULT_SYMBOLS)
+
+
+def test_the_console_and_the_window_watch_the_same_things():
+    """Two copies of a watchlist is two watchlists, and the one nobody edits is
+    the one that quietly disagrees."""
+    assert signals.DEFAULT_SYMBOLS is signal_settings.DEFAULT_SYMBOLS
+
+
+def test_a_stock_gets_the_fifteen_minute_range_not_the_forex_thirty():
+    """The per-instrument suggestion is off by default, but wrong-by-default is
+    a trap laid for whoever turns it on: a stock opens on an auction, so it
+    belongs with the indices."""
+    from cheese_signals.markets.orb import suggest_range_minutes
+
+    for stock in ("AAPL", "NVDA", "TSLA"):
+        assert suggest_range_minutes(stock) == 15
+    assert suggest_range_minutes("NAS100") == 15
+    assert suggest_range_minutes("XAUUSD") == 30

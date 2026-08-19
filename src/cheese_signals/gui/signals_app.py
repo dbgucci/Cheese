@@ -657,11 +657,21 @@ class SettingsPage(QWidget):
         # -------------------------------------------------------- instruments
         sym_card, sym_lay = card("Instruments")
         sym_lay.addWidget(self._hint(
-            "One per line, exactly as your platform names them. Broker suffixes "
-            "are matched automatically, so XAUUSD finds XAUUSD247 or XAUUSD.r."))
+            "One per line. Broker decorations are matched automatically, so "
+            "XAUUSD finds XAUUSD247 or XAUUSD.r, and AAPL finds #AAPL or "
+            "AAPL.us.\n"
+            "The default list is the ten most traded US stocks, the three US "
+            "indices, gold and silver — all of which open on a real auction, "
+            "which is what an opening range measures. Currency pairs have no "
+            "opening auction and are left out for that reason; add one back if "
+            "you want to judge for yourself.\n"
+            "Anything your account does not offer is listed on the Signals "
+            "page rather than silently dropped."))
         self.symbols = QTextEdit()
         self.symbols.setPlainText("\n".join(s.symbols))
-        self.symbols.setMinimumHeight(170)
+        # Tall enough for the fifteen default instruments without a scroll:
+        # a list you cannot see the end of is one you edit blind.
+        self.symbols.setMinimumHeight(250)
         self.symbols.setStyleSheet(f"font-family: {theme.MONO_STACK};")
         sym_lay.addWidget(self.symbols)
         root.addWidget(sym_card)

@@ -29,8 +29,37 @@ RESULTS_FILE = "orb-results.csv"
 # be sent the picture of it afterwards.
 CHARTS_DIR = "orb-charts"
 
-DEFAULT_SYMBOLS = ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
-                   "EURUSD", "GBPUSD", "USDJPY"]
+# What the app watches out of the box: the ten most heavily traded US large
+# caps, the three US index CFDs, and gold and silver.
+#
+# **No FX.** It was there and it is gone, on the evidence of using it and on a
+# structural reason that agrees with the evidence: an opening range is a bet
+# that a market's *opening auction* carries information -- a bell, a crossing
+# trade, a real imbalance to clear. Stocks and index futures have one. Spot FX
+# does not. "London open" is a gradual handover of liquidity from Asia, so no
+# single minute is special, the first fifteen produce a range too narrow to
+# mean much, and what comes out is mostly spread. The FX session mappings are
+# still there for anyone who wants to put a pair back in the list.
+#
+# The stock list is a starting point, not a ranking to defend: turnover
+# leadership rotates, and these were chosen for consistently heavy dollar
+# volume rather than a snapshot of one week. Edit the list in Settings.
+#
+# Two things to know about single stocks that do not apply to the indices.
+# They trade only during the cash session, so there is one setup per name per
+# day and no overnight follow-through to catch. And they gap on earnings --
+# the range filters will skip a morning whose range is already 60% of the
+# average day, which is what an earnings gap looks like, but the day itself is
+# worth avoiding rather than trusting a filter to catch.
+DEFAULT_SYMBOLS = [
+    # US large caps, by dollar volume
+    "NVDA", "TSLA", "AAPL", "AMZN", "META",
+    "MSFT", "AMD", "GOOGL", "NFLX", "AVGO",
+    # US indices
+    "US30", "SPX500", "NAS100",
+    # Metals
+    "XAUUSD", "XAGUSD",
+]
 
 
 @dataclass

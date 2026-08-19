@@ -731,3 +731,53 @@ def test_the_bars_behind_an_alert_are_kept_so_it_can_be_drawn():
     kept = bot.last_bars["US30"]
     assert not kept.empty
     assert {"open", "high", "low", "close"} <= set(kept.columns)
+
+
+# ------------------------------ the cost of polling ------------------------------
+def test_the_long_history_is_fetched_once_a_day_not_once_a_poll():
+    """Three weeks of minutes is for the average-daily-range filter, which is
+    measured once per instrument per day. Asking for it again every twenty
+    seconds is thirty thousand rows per symbol per cycle, and the default
+    watchlist is fifteen symbols.
+    """
+    class Recording(FakeSource):
+        def __init__(self, bars):
+            super().__init__(bars)
+            self.spans = []
+
+        def history(self, symbol, timeframe, start, end):
+            self.spans.append((pd.Timestamp(end) - pd.Timestamp(start)).days)
+            return super().history(symbol, timeframe, start, end)
+
+    source = Recording(range_then([BREAK_BAR, RETEST_BAR]))
+    bot = SignalBot(source, SignalConfig(symbols=["US30"], orb=LOOSE),
+                    specs={"US30": US30})
+    bot.cycle(at(16))
+    bot.cycle(at(17))
+    bot.cycle(at(18))
+    assert source.spans[0] >= 20, "the first look needs the ADR history"
+    assert all(span <= 2 for span in source.spans[1:]), \
+        f"later polls still asked for {source.spans[1:]} days"
+
+
+def test_a_new_day_fetches_the_long_history_again():
+    """The filter has to be measured against the days behind *this* session."""
+    class Recording(FakeSource):
+        def __init__(self, bars):
+            super().__init__(bars)
+            self.spans = []
+
+        def history(self, symbol, timeframe, start, end):
+            self.spans.append((pd.Timestamp(end) - pd.Timestamp(start)).days)
+            return super().history(symbol, timeframe, start, end)
+
+    source = Recording(range_then([BREAK_BAR]))
+    bot = SignalBot(source, SignalConfig(symbols=["US30"], orb=LOOSE),
+                    specs={"US30": US30})
+    bot.cycle(at(16))
+    bot.cycle(at(17))
+    # A fresh watch, as the next session gets.
+    bot.watches.clear()
+    source.spans.clear()
+    bot.cycle(at(18))
+    assert source.spans[0] >= 20

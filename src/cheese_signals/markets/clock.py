@@ -120,6 +120,24 @@ INSTRUMENT_SESSIONS: dict[str, str] = {
     "GER40": "london", "DE40": "london", "DAX40": "london", "GER30": "london",
     "UK100": "london", "FRA40": "london", "EU50": "london", "STOXX50": "london",
     "JP225": "tokyo", "JPN225": "tokyo",
+    # US single stocks, on the cash open -- 09:30 New York, the same bell the
+    # indices open on. A stock is the instrument this strategy fits best: the
+    # opening auction is a real event with a crossing price and a genuine
+    # imbalance to clear, which is the thing an opening range is measuring. FX
+    # has no auction at all, which is why it is the weakest case here.
+    #
+    # Prices outside 09:30-16:00 are the broker's own quote rather than an
+    # exchange print, so the range is anchored to the cash open and the day is
+    # over at the bell.
+    "AAPL": "us_cash", "MSFT": "us_cash", "NVDA": "us_cash",
+    "AMZN": "us_cash", "META": "us_cash", "GOOGL": "us_cash",
+    "TSLA": "us_cash", "AMD": "us_cash", "NFLX": "us_cash",
+    "AVGO": "us_cash", "INTC": "us_cash", "MU": "us_cash",
+    "COIN": "us_cash", "PLTR": "us_cash", "BABA": "us_cash",
+    "JPM": "us_cash", "BAC": "us_cash", "WMT": "us_cash",
+    "XOM": "us_cash", "DIS": "us_cash", "BA": "us_cash",
+    "PYPL": "us_cash", "SHOP": "us_cash", "UBER": "us_cash",
+    "SPY": "us_cash", "QQQ": "us_cash",
     # Metals
     "XAUUSD": "london", "GOLD": "london", "XAUEUR": "london",
     "XAGUSD": "london", "SILVER": "london",

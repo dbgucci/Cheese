@@ -649,20 +649,40 @@ def is_index(symbol: str) -> bool:
     return base_name(symbol).startswith(INDEX_PREFIXES)
 
 
+def opens_on_an_auction(symbol: str) -> bool:
+    """Does this instrument have a real opening event to measure?
+
+    The question the whole strategy rests on. An index or a single stock opens
+    with an auction: a bell, a crossing price, and an order imbalance that takes
+    a few minutes to clear. Spot FX and metals do not -- London "opens" as a
+    gradual handover of liquidity from Asia, and no single minute is special.
+    """
+    from .clock import INSTRUMENT_SESSIONS, base_name
+
+    name = base_name(symbol)
+    if name.startswith(INDEX_PREFIXES):
+        return True
+    # A single stock is whatever is mapped to a cash-equity session and is not
+    # one of the index CFDs. Asking the session table rather than keeping a
+    # second list of tickers here, because two lists drift.
+    return INSTRUMENT_SESSIONS.get(name) in ("us_cash", "comex") and \
+        not name.startswith(("XAU", "XAG", "XPT", "XPD"))
+
+
 def suggest_range_minutes(symbol: str) -> int:
     """A starting range length, with the reason rather than a lookup table.
 
-    Indices open with a genuine auction: a bell, a crossing trade, and a
-    violent first few minutes. Fifteen minutes is the standard anchor because
-    that is roughly how long the auction's imbalance takes to clear.
+    Instruments with an opening auction -- indices and single stocks -- get
+    fifteen minutes, because that is roughly how long the auction's imbalance
+    takes to clear.
 
-    Spot FX and metals have no auction at all. London "opens" as a gradual
-    handover of liquidity from Asia, so no single minute is special and a
-    fifteen-minute window on a slow handover produces a range too narrow to
-    mean anything. Thirty minutes is the adjustment.
+    Spot FX and metals have no auction at all, so a fifteen-minute window on a
+    slow liquidity handover produces a range too narrow to mean anything.
+    Thirty minutes is the adjustment, and it is still the weakest case: this is
+    why FX came out of the default watchlist.
 
     Returned as a suggestion the caller applies, never applied silently on top
     of a value someone chose -- a config that quietly disagrees with the
     config file is worse than a bad default.
     """
-    return 15 if is_index(symbol) else 30
+    return 15 if opens_on_an_auction(symbol) else 30

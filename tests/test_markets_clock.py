@@ -254,3 +254,55 @@ def test_an_unusable_reader_zone_is_dropped_rather_than_raising():
     moment = datetime(2026, 8, 13, 7, 40, tzinfo=timezone.utc)
     lines = when_lines(moment, SESSIONS["london"], 180, reader_tz="Mars/Olympus")
     assert any("UTC" in line for line in lines)
+
+
+# ------------------------------ what is watched ------------------------------
+#
+# A symbol with no session mapping does not error loudly -- session_for raises,
+# the bot catches it, writes one line to the Activity log and moves on. So an
+# unmapped instrument looks exactly like a quiet one, all day. That is the
+# failure these guard against.
+def test_every_default_instrument_has_a_session():
+    from cheese_signals.markets.signal_settings import DEFAULT_SYMBOLS
+
+    for symbol in DEFAULT_SYMBOLS:
+        spec = session_for(symbol)          # raises if unmapped
+        assert spec.key
+
+
+def test_the_stocks_open_on_the_new_york_bell():
+    """09:30 America/New_York -- the same auction the US indices open on, and
+    the event the whole strategy is a bet on."""
+    for symbol in ("AAPL", "NVDA", "TSLA", "MSFT", "GOOGL"):
+        spec = session_for(symbol)
+        assert spec.tz == "America/New_York"
+        assert (spec.open_time.hour, spec.open_time.minute) == (9, 30)
+
+
+def test_broker_decorated_stock_names_still_resolve():
+    """Brokers write single stocks as #AAPL, AAPL.us, AAPL_us or TSLA.NAS."""
+    for name in ("#AAPL", "AAPL.us", "AAPL_us", "AAPL-CFD"):
+        assert base_name(name) == "AAPL"
+        assert session_for(name).key == "us_cash"
+    assert session_for("TSLA.NAS").key == "us_cash"
+
+
+def test_no_ticker_shadows_a_longer_one():
+    """BA must not swallow BABA, nor AMD swallow anything. base_name matches
+    longest key first; this is the test that keeps that true as tickers are
+    added."""
+    assert base_name("BABA") == "BABA"
+    assert base_name("BAC") == "BAC"
+    assert base_name("BA") == "BA"
+    for key in clock.INSTRUMENT_SESSIONS:
+        assert base_name(key) == key, f"{key} is shadowed by a shorter ticker"
+
+
+def test_forex_is_still_mapped_even_though_it_is_not_watched_by_default():
+    """Dropped from the default list, not removed from the app: anyone who
+    wants a pair back only has to type it into Settings."""
+    from cheese_signals.markets.signal_settings import DEFAULT_SYMBOLS
+
+    assert session_for("EURUSD").key == "london"
+    assert not [s for s in DEFAULT_SYMBOLS if s.endswith("USD")
+                and s not in ("XAUUSD", "XAGUSD")]

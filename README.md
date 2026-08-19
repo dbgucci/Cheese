@@ -318,10 +318,36 @@ If you want alerts rather than an autotrader, `markets/signals.py` sends them an
 places nothing. There is no code path from it to an order, so it needs no
 algo-trading permission and cannot cost anything if it is wrong.
 
+#### What it watches, and why not currency pairs
+
+The default list is **the ten most traded US stocks** (NVDA, TSLA, AAPL, AMZN,
+META, MSFT, AMD, GOOGL, NFLX, AVGO), **the three US index CFDs** (US30, SPX500,
+NAS100) and **gold and silver**.
+
+Currency pairs were in that list and came out, on a live result and on a reason
+that agrees with it. An opening range is a bet that a market's *opening auction*
+carries information — a bell, a crossing price, a real order imbalance that takes
+a few minutes to clear. Stocks and index futures have one. Spot FX does not:
+"the London open" is a gradual handover of liquidity from Asia, no single minute
+is special, and a fifteen-minute window on a slow handover produces a range too
+narrow to clear its own spread. The FX session mappings are still there — put a
+pair back in Settings if you want to judge it against your own record.
+
+Two things about single stocks that do not apply to the index CFDs. They trade
+only during the cash session, so there is one setup per name per day. And they
+gap on earnings: the range filters will skip a morning whose range is already 60%
+of the average day, which is what a gap looks like, but the day itself is worth
+avoiding rather than trusting a filter to catch.
+
+Your broker may list stocks as `#AAPL`, `AAPL.us` or `AAPL_us` — all matched
+automatically. Anything the account does not offer is named on the Signals page
+rather than silently dropped, so a broker with no stock CFDs tells you so.
+
 Per instrument, per day, it watches for three things:
 
 1. **The range** — high and low of the first 15 minutes after that market's own
-   open (09:30 New York for the US indices, 08:00 London for gold, silver and FX).
+   open (09:30 New York for the stocks and US indices, 08:00 London for gold and
+   silver).
 2. **BREAK** — a bar *closes* beyond the high or the low. First alert.
 3. **RETEST** — price comes back to the level it broke and holds it: a bar trades
    to the level but still closes on the breakout side. Second alert, and usually

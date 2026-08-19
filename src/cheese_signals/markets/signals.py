@@ -552,8 +552,9 @@ class SignalBot:
             return 1.0, 5
         return float(getattr(spec, "point", 1.0)), int(getattr(spec, "digits", 5))
 
-    def _bars(self, symbol: str, now: datetime) -> pd.DataFrame:
-        start = self.clock.to_server(now - timedelta(days=LOOKBACK_DAYS))
+    def _bars(self, symbol: str, now: datetime,
+              days: int = LOOKBACK_DAYS) -> pd.DataFrame:
+        start = self.clock.to_server(now - timedelta(days=days))
         raw = self.source.history(symbol, M1, start, self.clock.to_server(now))
         bars = orb.as_utc_index(self.clock.frame_to_utc(raw)).sort_index()
         # Kept so a caller can draw the setup that produced an alert. Only the
@@ -645,7 +646,15 @@ class SignalBot:
             return []                          # the range is still forming
 
         point, digits = self._point_and_digits(symbol)
-        bars = self._bars(symbol, now)
+        # Three weeks of minutes only while the range is still being built --
+        # that history is for the average-daily-range filter, which is measured
+        # once per instrument per day. Every poll after that needs nothing older
+        # than this session. At fifteen instruments on a twenty-second poll the
+        # difference is roughly thirty thousand rows per symbol per cycle
+        # against fifteen hundred, which is the difference between a bot that
+        # idles and one that pins a core and lags its own alerts.
+        bars = self._bars(symbol, now,
+                          LOOKBACK_DAYS if watch.range_ is None else 2)
         if bars.empty:
             self._say(symbol, "no bars came back")
             return []
@@ -918,8 +927,9 @@ class SignalBot:
 # --------------------------------------------------------------------------
 # the CLI
 # --------------------------------------------------------------------------
-DEFAULT_SYMBOLS = ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
-                   "EURUSD", "GBPUSD", "USDJPY"]
+# Imported rather than repeated. Two copies of a watchlist is two watchlists,
+# and the one nobody edits is the one that quietly disagrees with the app.
+from .signal_settings import DEFAULT_SYMBOLS      # noqa: E402
 
 
 def build_notifier(token: Optional[str], chat_id: Optional[str]):  # pragma: no cover
