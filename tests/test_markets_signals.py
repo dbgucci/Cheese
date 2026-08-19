@@ -781,3 +781,63 @@ def test_a_new_day_fetches_the_long_history_again():
     source.spans.clear()
     bot.cycle(at(18))
     assert source.spans[0] >= 20
+
+
+# ------------------------------ a feed with no spread ------------------------------
+#
+# From a live results file: four FX alerts with cost_points = 0, stops of three
+# to five pips, and ranges that could not have cleared a real spread. The broker
+# simply does not populate the per-bar spread on those symbols. Read as zero,
+# that number does more than flatter the arithmetic -- min_range_cost_multiple is
+# range divided by cost, so a cost of nothing passes every range there is.
+NARROW = orb.OrbConfig(min_range_adr_fraction=0.0, max_range_adr_fraction=10.0)
+
+
+def test_a_feed_reporting_no_spread_falls_back_to_the_quoted_one():
+    """Zero in the bars is missing data, not free trading."""
+    quoted = SymbolSpec(name="US30", point=POINT, digits=1, contract_size=1.0,
+                        tick_value=1.0, tick_size=1.0, volume_min=0.1,
+                        volume_step=0.1, volume_max=50.0, spread_current=30.0)
+    bars = range_then([BREAK_BAR], spread=0.0)
+    bot = SignalBot(FakeSource(bars, quoted),
+                    SignalConfig(symbols=["US30"], orb=NARROW),
+                    specs={"US30": quoted})
+    signal = bot.cycle(at(16))[0]
+    assert signal.cost_points == 30.0, "the terminal's own spread, not nothing"
+
+
+def test_the_cost_filter_still_bites_when_the_bars_carry_no_spread():
+    """The filter is a ratio. This is the case where its divisor vanished and
+    three-pip ranges started getting through."""
+    quoted = SymbolSpec(name="US30", point=POINT, digits=1, contract_size=1.0,
+                        tick_value=1.0, tick_size=1.0, volume_min=0.1,
+                        volume_step=0.1, volume_max=50.0, spread_current=90.0)
+    # A 40-point range against a 90-point round trip: unviable, and the whole
+    # reason min_range_cost_multiple exists.
+    bars = range_then([(44006, 43998, 44005)], high=44002.0, low=43998.0,
+                      spread=0.0)
+    bot = SignalBot(FakeSource(bars, quoted),
+                    SignalConfig(symbols=["US30"], orb=NARROW),
+                    specs={"US30": quoted})
+    assert bot.cycle(at(16)) == []
+    assert bot.watches[("US30", DAY)].state == signals.SKIPPED
+
+
+def test_a_feed_with_no_spread_anywhere_says_so_rather_than_pricing_it_free():
+    """No bar spread and no quoted spread: the filter cannot work, and that has
+    to be visible instead of looking like an ordinary alert."""
+    blind = SymbolSpec(name="US30", point=POINT, digits=1, contract_size=1.0,
+                       tick_value=1.0, tick_size=1.0, volume_min=0.1,
+                       volume_step=0.1, volume_max=50.0, spread_current=0.0)
+    bot = SignalBot(FakeSource(range_then([BREAK_BAR], spread=0.0), blind),
+                    SignalConfig(symbols=["US30"], orb=NARROW),
+                    specs={"US30": blind})
+    bot.cycle(at(16))
+    assert any("reports no spread" in note for note in bot.notes)
+
+
+def test_a_normal_feed_is_unaffected():
+    """The spread in the bars still wins when there is one -- this fix must not
+    quietly start using a live quote in place of the morning's real cost."""
+    bot, _ = make(range_then([BREAK_BAR], spread=14.0))
+    assert bot.cycle(at(16))[0].cost_points == 14.0

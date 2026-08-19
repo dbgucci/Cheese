@@ -362,9 +362,19 @@ def _cost_points(window: pd.DataFrame, commission_points: float,
     because the number that matters is the one being charged this morning. A
     widened spread is itself a reason not to trade the day, and averaging it
     away hides exactly that.
+
+    **A column of zeros is missing data, not free trading.** Some feeds simply
+    do not populate the per-bar spread, and reading that as zero does more than
+    flatter the arithmetic: ``min_range_cost_multiple`` is a ratio of range to
+    cost, so a cost of zero passes every range, however narrow. A live record
+    showed exactly this -- four FX alerts with three-to-five pip stops, ranges
+    that could not have cleared a real spread, all waved through by a filter
+    whose divisor had quietly become nothing. So zero falls back too.
     """
     if "spread" in window and not window["spread"].isna().all():
         spread = float(window["spread"].astype(float).median())
+        if spread <= 0.0:
+            spread = float(fallback_spread_points)
     else:
         spread = float(fallback_spread_points)
     return spread + commission_points

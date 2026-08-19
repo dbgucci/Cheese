@@ -552,6 +552,17 @@ class SignalBot:
             return 1.0, 5
         return float(getattr(spec, "point", 1.0)), int(getattr(spec, "digits", 5))
 
+    def _quoted_spread(self, symbol: str) -> float:
+        """The terminal's current spread in points, for feeds that omit it.
+
+        Used only when the range's own bars carry no spread -- a real case, and
+        a dangerous one, because a cost of zero makes the range-versus-cost
+        filter pass everything. This is still a measurement rather than a guess:
+        it is what the terminal is quoting on this symbol right now.
+        """
+        spec = self._specs.get(symbol)
+        return float(getattr(spec, "spread_current", 0.0) or 0.0)
+
     def _bars(self, symbol: str, now: datetime,
               days: int = LOOKBACK_DAYS) -> pd.DataFrame:
         start = self.clock.to_server(now - timedelta(days=days))
@@ -661,7 +672,8 @@ class SignalBot:
 
         rng = watch.range_
         if rng is None:
-            rng = orb.build_range(bars, symbol, spec, day, cfg, point)
+            rng = orb.build_range(bars, symbol, spec, day, cfg, point,
+                                  fallback_spread_points=self._quoted_spread(symbol))
             if rng is None:
                 self._say(symbol, f"no bars inside the {open_at:%H:%M}-"
                                   f"{range_end:%H:%M} UTC opening range")
@@ -676,6 +688,14 @@ class SignalBot:
                     self._say(symbol, verdict.reason)
                     return []
             watch.range_ = rng
+            if self.config.apply_filters and rng.cost_points <= 0:
+                # Said out loud, because the consequence is invisible: the
+                # range-versus-cost filter is a ratio, so a cost of nothing
+                # passes every range however narrow, and the alerts that come
+                # out look like ordinary ones.
+                self._note(f"{symbol}: the feed reports no spread, so this "
+                           f"instrument's cost filter cannot bite and its "
+                           f"results are gross of spread")
             self._say(symbol, f"range marked {rng.low:.{digits}f}-{rng.high:.{digits}f} "
                               f"({rng.width_points:.0f}pt); watching for a break")
 
