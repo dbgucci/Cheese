@@ -744,6 +744,18 @@ class SettingsPage(QWidget):
             self.tg_chat.setText(chats[labels.index(choice)]["id"])
 
     def send_test(self) -> None:
+        """Send a test message, and then say whether the alerts will use it.
+
+        These two things came apart in the field and cost a day of signals. The
+        test sends with whatever is typed in the boxes -- which is what makes it
+        a useful test of a token you have just pasted -- while the alerts send
+        with what was *saved*. Type a token, press this, watch it arrive, and
+        every alert afterwards is skipped because nothing was ever saved.
+
+        So a successful test that will not be repeated by a real alert now says
+        so in a dialog rather than leaving a green status line to imply
+        otherwise.
+        """
         token, chat = self.tg_token.text().strip(), self.tg_chat.text().strip()
         if not token or not chat:
             self.window.set_status("A token and a chat ID are both needed.")
@@ -752,10 +764,27 @@ class SettingsPage(QWidget):
 
         ok, err = TelegramNotifier(token, chat).send_verbose(
             "*ORB Signals* connected. Break and retest alerts will arrive here.")
-        if ok:
-            self.window.set_status("Test message sent — check Telegram.")
-        else:
+        if not ok:
             QMessageBox.warning(self, "Telegram", f"Could not send:\n\n{err}")
+            return
+
+        saved = self.window.settings
+        unsaved = (token != saved.telegram_token
+                   or chat != saved.telegram_chat_id)
+        switched_off = not self.tg_enabled.isChecked()
+        if unsaved or switched_off:
+            reason = ("these details are not saved yet"
+                      if unsaved else "Send alerts to Telegram is switched off")
+            QMessageBox.warning(
+                self, "Test sent — but alerts will not use it",
+                f"The test message went through, but {reason}.\n\n"
+                f"Alerts are sent with the saved settings, so until you press "
+                f"Save they will not go to Telegram. The Telegram tile on the "
+                f"Signals page shows what the alerts will actually do.")
+            self.window.set_status(
+                "Test sent, but not saved — press Save or alerts will not go out.")
+            return
+        self.window.set_status("Test message sent — check Telegram.")
 
     # ---------------------------------------------------------------- save
     def save(self) -> None:
@@ -1098,7 +1127,27 @@ class SignalsWindow(QMainWindow):
         if missing:
             self.activity.add("not offered on this account: " + ", ".join(missing))
 
+    def _loudly(self, what: str, work) -> None:
+        """Run a slot's body so that a failure cannot disappear.
+
+        Qt slots swallow Python exceptions: the traceback goes to stderr, and a
+        windowed exe has no stderr. That is how an alert can fail to send while
+        the signal sits in the table looking fine and nothing anywhere says why.
+        Anything that goes wrong now lands in the Activity log and on the status
+        bar, where somebody will see it.
+        """
+        try:
+            work()
+        except Exception as exc:                        # noqa: BLE001 - the point
+            self.activity.add(f"!! {what} failed: {type(exc).__name__}: {exc}")
+            self.activity.add(traceback.format_exc())
+            self.set_status(f"{what} failed — see the Activity page.")
+
     def _on_signal(self, signal) -> None:
+        self._loudly(f"handling the {signal.symbol} signal",
+                     lambda: self._handle_signal(signal))
+
+    def _handle_signal(self, signal) -> None:
         self.feed.add_signal(signal)
         if signal.kind == sig.BREAK:
             self._breaks += 1
@@ -1108,10 +1157,16 @@ class SignalsWindow(QMainWindow):
             self.feed.tile_retests.set_value(str(self._retests))
 
         if not self.settings.wants(signal.kind):
+            self.activity.add(f"{signal.one_line()}  (alerts for this stage are "
+                              f"switched off in Settings)")
             return
         self._alert(signal.format(), signal.one_line(), signal, "signal")
 
     def _on_outcome(self, outcome) -> None:
+        self._loudly(f"handling the {outcome.symbol} result",
+                     lambda: self._handle_outcome(outcome))
+
+    def _handle_outcome(self, outcome) -> None:
         """A paper trade finished: the entry alert's row gets its verdict."""
         self.feed.set_result(outcome)
         self.tally.add(outcome)
@@ -1143,30 +1198,52 @@ class SignalsWindow(QMainWindow):
         """
         image = None
         if item is not None and self.settings.attach_chart:
-            image = self.worker.draw(item, kind)
-            if image and self.settings.keep_charts:
-                self._keep(image, item)
+            # Guarded as a whole. The picture is the optional half of an alert,
+            # and nothing about drawing or filing it is worth losing a message
+            # over -- which is what a raise here used to do, silently.
+            try:
+                image = self.worker.draw(item, kind)
+                if image and self.settings.keep_charts:
+                    self._keep(image, item)
+            except Exception as exc:                    # noqa: BLE001
+                self.activity.add(f"the chart step failed ({exc}); sending the "
+                                  f"alert as text")
+                image = None
 
         if not self.settings.telegram_ready:
-            self.activity.add(f"{log_line}  (Telegram is not set up, so this was "
-                              f"not sent)")
+            why = ("Send alerts to Telegram is switched off"
+                   if not self.settings.telegram_enabled
+                   else "no bot token is saved" if not self.settings.telegram_token
+                   else "no chat ID is saved")
+            self.activity.add(f"{log_line}  (NOT SENT: {why})")
+            self.set_status(f"Signals are firing but not being sent — {why}. "
+                            f"Check Settings, then press Save.")
             return
         from ..notifiers import TelegramNotifier
 
         bot = TelegramNotifier(self.settings.telegram_token,
                                self.settings.telegram_chat_id)
-        if image:
-            ok, err = bot.send_photo(image, body)
-            if not ok:
-                # The picture is the optional half. Losing the alert because an
-                # upload failed would be the wrong trade.
+        try:
+            if image:
+                ok, err = bot.send_photo(image, body)
+                if not ok:
+                    # The picture is the optional half. Losing the alert because
+                    # an upload failed would be the wrong trade.
+                    ok, err = bot.send_verbose(body)
+                    err = (f"chart upload failed, text sent instead ({err})"
+                           if ok else err)
+            else:
                 ok, err = bot.send_verbose(body)
-                err = f"chart upload failed, text sent instead ({err})" if ok else err
-        else:
-            ok, err = bot.send_verbose(body)
+        except Exception as exc:                        # noqa: BLE001
+            # send_verbose and send_photo catch the network errors they expect.
+            # This is for the ones nobody expected, which must still not be the
+            # reason an alert vanishes without a word.
+            ok, err = False, f"{type(exc).__name__}: {exc}"
         self.activity.add(log_line + ("  → sent" if ok and not err
                                       else f"  → {err}" if ok
                                       else f"  → Telegram failed: {err}"))
+        if not ok:
+            self.set_status(f"Telegram failed: {err}")
 
     def _keep(self, image: bytes, item) -> None:
         ref = getattr(item, "ref", "") or item.symbol
@@ -1184,6 +1261,35 @@ class SignalsWindow(QMainWindow):
         self.feed.start_btn.setText("Stop" if running else "Start watching")
         self.feed.connect_btn.setEnabled(not running)
         self.set_status("Watching." if running else "Stopped.")
+        if running:
+            self._preflight()
+
+    def _preflight(self) -> None:
+        """Say whether alerts will actually go out, at the moment watching starts.
+
+        The alternative is finding out hours later that they did not. Everything
+        checked here was already discoverable -- on a tile, in a log line -- and
+        being discoverable was not enough.
+        """
+        s = self.settings
+        if not s.telegram_ready:
+            why = ("Send alerts to Telegram is switched off"
+                   if not s.telegram_enabled
+                   else "no bot token is saved" if not s.telegram_token
+                   else "no chat ID is saved")
+            self.activity.add(f"!! Watching, but NOTHING WILL BE SENT to "
+                              f"Telegram: {why}. Fix it in Settings and press "
+                              f"Save — a test message uses the boxes you typed "
+                              f"in, alerts use what was saved.")
+            self.set_status(f"Watching — but alerts will not be sent: {why}.")
+            return
+        stages = [name for name, on in (("break", s.alert_on_break),
+                                        ("retest", s.alert_on_retest),
+                                        ("result", s.alert_on_result)) if on]
+        wanted = ", ".join(stages) or "nothing — every alert type is off"
+        self.activity.add(
+            f"Watching {len(self.worker.symbols)} instruments. Telegram is set "
+            f"up; alerts will be sent for: {wanted}.")
 
     def closeEvent(self, event) -> None:      # noqa: N802 - Qt naming
         self.worker.shutdown()
