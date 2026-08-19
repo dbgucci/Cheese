@@ -53,9 +53,9 @@ from .. import paths
 from ..markets import signals as sig
 from ..markets.clock import session_for
 from ..markets.execution import BUY
-from ..markets.signal_settings import (SignalSettings, append_result,
-                                       chart_path, charts_dir, load_tally,
-                                       results_path, settings_path)
+from ..markets.signal_settings import (DEFAULT_SYMBOLS, SignalSettings,
+                                       append_result, chart_path, charts_dir,
+                                       load_tally, results_path, settings_path)
 from . import theme
 from .branding import app_icon
 from .common import (card, cell, form_grid, form_note, form_row,
@@ -674,6 +674,15 @@ class SettingsPage(QWidget):
         self.symbols.setMinimumHeight(250)
         self.symbols.setStyleSheet(f"font-family: {theme.MONO_STACK};")
         sym_lay.addWidget(self.symbols)
+        reset = QPushButton("Use the default list")
+        reset.setObjectName("Ghost")
+        reset.setToolTip("The ten most traded US stocks, the three US indices, "
+                         "gold and silver.")
+        reset.clicked.connect(self.reset_symbols)
+        reset_row = QHBoxLayout()
+        reset_row.addWidget(reset)
+        reset_row.addStretch(1)
+        sym_lay.addLayout(reset_row)
         root.addWidget(sym_card)
 
         # -------------------------------------------------------- connection
@@ -781,6 +790,10 @@ class SettingsPage(QWidget):
         self.window.refresh_alert_tile()
         self.window.refresh_record_tile()
         self.window.set_status(f"Saved to {settings_path()}")
+
+    def reset_symbols(self) -> None:
+        self.symbols.setPlainText("\n".join(DEFAULT_SYMBOLS))
+        self.window.set_status("Default list loaded — press Save to keep it.")
 
     def open_results(self) -> None:
         self._reveal(results_path(),
@@ -898,8 +911,30 @@ class SignalsWindow(QMainWindow):
 
         self.refresh_alert_tile()
         self.refresh_record_tile()
+        self._report_watchlist()
         self.set_status("Start MetaTrader 5, log in, then press Connect.")
         self.worker.post("connect")
+
+    def _report_watchlist(self) -> None:
+        """Say when the stored watchlist was replaced, or when it was not.
+
+        Silence either way is what made a changed default useless: the app went
+        on watching an old list and nothing in front of the user said so.
+        """
+        s = self.settings
+        if s.watchlist_adopted:
+            # Written back, or the same migration runs on every launch and the
+            # file on disk stays wrong for anyone reading it.
+            s.save()
+            self.activity.add(
+                "The default watchlist changed, and this settings file still "
+                "held the old default, so it has been updated: now watching "
+                + ", ".join(s.symbols) + ".")
+        elif s.watchlist_is_custom:
+            self.activity.add(
+                "Your instrument list was edited by hand, so it has been left "
+                "alone. The default is now " + ", ".join(DEFAULT_SYMBOLS)
+                + " — Settings has a button to take it.")
 
     # ------------------------------------------------------------- chrome
     def _build_sidebar(self) -> QWidget:

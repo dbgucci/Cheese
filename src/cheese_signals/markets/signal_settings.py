@@ -61,6 +61,24 @@ DEFAULT_SYMBOLS = [
     "XAUUSD", "XAGUSD",
 ]
 
+# Every watchlist this app has ever shipped as its default.
+#
+# A settings file overrides the default -- that is what a settings file is for,
+# and it is also why changing the default did nothing whatsoever for anyone who
+# had already opened the app once. "Default to the top ten stocks" reasonably
+# means "watch them", not "watch them on a machine that has never run this
+# before", and the fix is not to ask someone to retype fifteen tickers.
+#
+# So a stored list that matches one of these is taken to be nobody's decision --
+# it is whatever the default happened to be the day the app first ran -- and a
+# new default replaces it. A list matching none of them was edited by hand;
+# that is somebody's decision and is left alone, with the window saying the
+# default moved and offering a button.
+PREVIOUS_DEFAULT_SYMBOLS: list[list[str]] = [
+    ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
+     "EURUSD", "GBPUSD", "USDJPY"],
+]
+
 
 @dataclass
 class SignalSettings:
@@ -106,6 +124,30 @@ class SignalSettings:
     # the worst a leaked bot token allows is sending messages as the bot, and
     # the alternative -- retyping a 46-character token every session -- means
     # nobody ever turns alerts on. The trading password is still never saved.
+
+    # Deliberately not a field: it describes what happened during this load, not
+    # anything worth writing to the file. Being a plain class attribute keeps it
+    # out of asdict() and out of __eq__.
+    watchlist_adopted = False
+    watchlist_is_custom = False
+
+    # ---------------------------------------------------------- migration
+    def adopt_default_watchlist(self) -> bool:
+        """Take a changed default list -- but only over a list nobody chose.
+
+        Returns True when the list was replaced. Sets ``watchlist_is_custom``
+        when it was not, so the window can say the default moved rather than
+        silently disagreeing with what was asked for.
+        """
+        if self.symbols == DEFAULT_SYMBOLS:
+            return False
+        for shipped in PREVIOUS_DEFAULT_SYMBOLS:
+            if sorted(self.symbols) == sorted(shipped):
+                self.symbols = list(DEFAULT_SYMBOLS)
+                self.watchlist_adopted = True
+                return True
+        self.watchlist_is_custom = True
+        return False
 
     @property
     def telegram_ready(self) -> bool:
@@ -184,7 +226,9 @@ class SignalSettings:
             # unrecoverable state for someone with no console to read.
             return cls()
         known = set(cls().__dataclass_fields__)
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        settings = cls(**{k: v for k, v in raw.items() if k in known})
+        settings.adopt_default_watchlist()
+        return settings
 
     def save(self, path: Optional[Path] = None) -> Path:
         path = path or settings_path()

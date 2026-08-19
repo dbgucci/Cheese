@@ -311,3 +311,64 @@ def test_a_stock_gets_the_fifteen_minute_range_not_the_forex_thirty():
         assert suggest_range_minutes(stock) == 15
     assert suggest_range_minutes("NAS100") == 15
     assert suggest_range_minutes("XAUUSD") == 30
+
+
+# ------------------------- adopting a changed default -------------------------
+#
+# The gap this closes: the default watchlist was changed and nothing happened,
+# because a settings file overrides the default and every existing install has
+# one. "Default to the top ten stocks" means watch them, not watch them on a
+# machine that has never run the app.
+OLD_DEFAULT = ["XAUUSD", "XAGUSD", "US30", "SPX500", "NAS100",
+               "EURUSD", "GBPUSD", "USDJPY"]
+
+
+def test_a_stored_old_default_is_replaced_on_load(tmp_path):
+    path = tmp_path / "s.json"
+    SignalSettings(symbols=list(OLD_DEFAULT), telegram_token="keep me").save(path)
+    loaded = SignalSettings.load(path)
+    assert loaded.symbols == signal_settings.DEFAULT_SYMBOLS
+    assert loaded.watchlist_adopted is True
+    assert loaded.telegram_token == "keep me", "only the watchlist is touched"
+
+
+def test_forex_is_actually_gone_after_the_upgrade(tmp_path):
+    """The point of the exercise."""
+    path = tmp_path / "s.json"
+    SignalSettings(symbols=list(OLD_DEFAULT)).save(path)
+    symbols = SignalSettings.load(path).symbols
+    assert not {"EURUSD", "GBPUSD", "USDJPY"} & set(symbols)
+    assert {"AAPL", "NVDA", "US30", "XAUUSD"} <= set(symbols)
+
+
+def test_a_hand_edited_list_is_left_alone(tmp_path):
+    """Somebody's decision, not a leftover default. Overwriting it on an upgrade
+    is the other way to get this wrong."""
+    mine = ["NAS100", "XAUUSD", "EURUSD"]
+    path = tmp_path / "s.json"
+    SignalSettings(symbols=list(mine)).save(path)
+    loaded = SignalSettings.load(path)
+    assert loaded.symbols == mine
+    assert loaded.watchlist_adopted is False
+    assert loaded.watchlist_is_custom is True
+
+
+def test_a_list_already_on_the_new_default_is_not_flagged_as_custom(tmp_path):
+    path = tmp_path / "s.json"
+    SignalSettings().save(path)
+    loaded = SignalSettings.load(path)
+    assert loaded.watchlist_adopted is False
+    assert loaded.watchlist_is_custom is False
+
+
+def test_the_order_of_a_stored_default_does_not_matter(tmp_path):
+    """It is the same list either way, and a sort order is not a decision."""
+    path = tmp_path / "s.json"
+    SignalSettings(symbols=sorted(OLD_DEFAULT)).save(path)
+    assert SignalSettings.load(path).watchlist_adopted is True
+
+
+def test_a_missing_file_needs_no_migration(tmp_path):
+    loaded = SignalSettings.load(tmp_path / "nothing.json")
+    assert loaded.symbols == signal_settings.DEFAULT_SYMBOLS
+    assert loaded.watchlist_adopted is False
