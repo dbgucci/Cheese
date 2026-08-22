@@ -435,7 +435,10 @@ def driftless_walk(count: int, start_price: float = 1.10000, vol: float = 0.0001
     lows = np.minimum(opens, closes) - np.abs(rng.normal(0, 1, count)) * scale
     volumes = rng.integers(50, 500, count).astype(float)
 
-    index = pd.date_range(end=pd.Timestamp.now("UTC").floor("min"),
+    # Anchored, not "now": the daily pivot levels downstream are cut on UTC day
+    # boundaries, so an index that moves with wall-clock time silently changes
+    # which bars land in which session and the same seed stops reproducing.
+    index = pd.date_range(start=pd.Timestamp("2026-01-01", tz="UTC"),
                           periods=count, freq="60s")
     return pd.DataFrame({"open": opens, "high": highs, "low": lows,
                          "close": closes, "volume": volumes}, index=index)
