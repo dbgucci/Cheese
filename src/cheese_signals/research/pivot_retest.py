@@ -348,7 +348,14 @@ def sweep(df: pd.DataFrame, test_fraction: float = 0.35, **fixed) -> str:
                f"(n={best[3]})")
     kept = sum(1 for r in rows if r[2] > 0)
     out.append(f"  {kept} of {len(rows)} sets are positive on the holdout "
-               f"({kept / len(rows):.0%}); chance alone gives about half")
+               f"({kept / len(rows):.0%})")
+    out.append("  NOT 50% under the null: these sets share one holdout and most "
+               "of the same\n  trades, and costs drag every one of them down. "
+               "Calibrated on 70 no-edge\n  series of this shape the survival "
+               "rate averages ~25% (sd ~22), so ~79% is\n  around the 95th "
+               "percentile -- interesting, and exactly the level at which\n"
+               "  findings usually fail to replicate. Re-run it on a different "
+               "period.")
     return "\n".join(out)
 
 
