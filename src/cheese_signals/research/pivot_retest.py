@@ -351,11 +351,12 @@ def sweep(df: pd.DataFrame, test_fraction: float = 0.35, **fixed) -> str:
                f"({kept / len(rows):.0%})")
     out.append("  NOT 50% under the null: these sets share one holdout and most "
                "of the same\n  trades, and costs drag every one of them down. "
-               "Calibrated on 70 no-edge\n  series of this shape the survival "
-               "rate averages ~25% (sd ~22), so ~79% is\n  around the 95th "
-               "percentile -- interesting, and exactly the level at which\n"
-               "  findings usually fail to replicate. Re-run it on a different "
-               "period.")
+               "Calibrated on 70 no-edge\n  series shaped like a real intraday "
+               "sample, survival averages 27% with a\n  standard deviation of "
+               "27, and its 95th percentile is 82% -- the statistic\n  is far "
+               "noisier than it looks. Roughly 8% of no-edge runs clear 79%, so\n"
+               "  a number in the seventies is suggestive and is not evidence. "
+               "Only another\n  period settles it.")
     return "\n".join(out)
 
 
