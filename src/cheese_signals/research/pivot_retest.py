@@ -123,7 +123,7 @@ def backtest(
     intraday: pd.DataFrame,
     adx_min: float = 20.0,
     retest_bars: int = 12,
-    stop_buffer_atr: float = 0.5,
+    stop_buffer_atr: float = 2.0,
     trail_after_r: float = 1.0,
     trail_atr: float = 2.0,
     spread_points: float = SPREAD_POINTS,
@@ -247,19 +247,77 @@ def backtest(
     return Backtest(trades, bars=len(df))
 
 
+def sweep(df: pd.DataFrame, test_fraction: float = 0.35, **fixed) -> str:
+    """Search on the first 65%, report the winner on the last 35%.
+
+    A grid search that reports its own best result is a search for the luckiest
+    parameter set, not the best one -- this repo has a whole document about
+    3,326 hypotheses and zero survivors. So the split is not optional here: the
+    training column picks the row, and the holdout column is the only number
+    that means anything.
+    """
+    cut = int(len(df) * (1 - test_fraction))
+    train, test = df.iloc[:cut], df.iloc[cut:]
+    grid = [(adx, stop, rt)
+            for adx in (0.0, 15.0, 20.0, 25.0, 30.0)
+            for stop in (1.5, 2.0, 3.0, 4.0)
+            for rt in (6, 12, 24)]
+    fixed = {k: v for k, v in fixed.items()
+             if k not in ("adx_min", "stop_buffer_atr", "retest_bars")}
+
+    rows = []
+    for adx, stop, rt in grid:
+        tr = backtest(train, adx_min=adx, stop_buffer_atr=stop,
+                      retest_bars=rt, **fixed)
+        if tr.n < 30:
+            continue
+        te = backtest(test, adx_min=adx, stop_buffer_atr=stop,
+                      retest_bars=rt, **fixed)
+        rows.append((tr.expectancy, tr.n, te.expectancy, te.n, adx, stop, rt))
+
+    if not rows:
+        return "no parameter set produced enough trades to judge"
+    rows.sort(key=lambda r: -r[0])
+    out = [f"SWEEP  {len(rows)} parameter sets, train {len(train):,} bars / "
+           f"holdout {len(test):,} bars",
+           f"  {'adx':>5} {'stopATR':>8} {'retest':>7} "
+           f"{'train n':>8} {'train E':>9} {'hold n':>7} {'hold E':>9}"]
+    for e_tr, n_tr, e_te, n_te, adx, stop, rt in rows[:12]:
+        out.append(f"  {adx:>5.0f} {stop:>8.1f} {rt:>7d} "
+                   f"{n_tr:>8d} {e_tr:>+9.3f} {n_te:>7d} {e_te:>+9.3f}")
+    best = rows[0]
+    out.append("")
+    out.append(f"  best on train: {best[0]:+.3f}R  ->  holdout {best[2]:+.3f}R "
+               f"(n={best[3]})")
+    kept = sum(1 for r in rows if r[2] > 0)
+    out.append(f"  {kept} of {len(rows)} sets are positive on the holdout "
+               f"({kept / len(rows):.0%}); chance alone gives about half")
+    return "\n".join(out)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("csv", nargs="?", help="intraday OHLC csv with a ts column")
     ap.add_argument("--adx-min", type=float, default=20.0, dest="adx_min")
+    ap.add_argument("--stop-atr", type=float, default=2.0, dest="stop_atr",
+                    help="stop distance beyond the level, in ATR (default 2.0; "
+                         "below ~1.5 the stop sits inside a typical bar and the "
+                         "result is dominated by intrabar guesswork)")
+    ap.add_argument("--retest-bars", type=int, default=12, dest="retest_bars")
+    ap.add_argument("--trail", action="store_true",
+                    help="enable the trailing stop the bot advertises. Measured "
+                         "on a no-edge series it raises win rate and lowers "
+                         "expectancy, so it is off unless asked for.")
+    ap.add_argument("--sweep", action="store_true",
+                    help="search parameters on the first 65%% of the data and "
+                         "report the best on the untouched last 35%%")
     ap.add_argument("--synthetic", type=int, default=0, metavar="N")
     args = ap.parse_args(argv)
 
     if args.csv:
-        df = pd.read_csv(args.csv)
-        tcol = next(c for c in df.columns if c.lower() in ("ts", "time", "date", "datetime"))
-        df[tcol] = pd.to_datetime(df[tcol], utc=True)
-        df = df.set_index(tcol).sort_index()
-        df.columns = [c.lower() for c in df.columns]
+        from . import candles_csv
+        df = candles_csv.load(args.csv)
+        print(candles_csv.describe(df) + "\n")
     elif args.synthetic:
         from .precision_reversal import driftless_walk
         df = driftless_walk(args.synthetic, start_price=30000.0, vol=0.0004, seed=5)
@@ -268,8 +326,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         ap.error("give a csv, or --synthetic N")
 
-    pess = backtest(df, adx_min=args.adx_min, tie_break="stop")
-    opt = backtest(df, adx_min=args.adx_min, tie_break="target")
+    kw = dict(adx_min=args.adx_min, stop_buffer_atr=args.stop_atr,
+              retest_bars=args.retest_bars,
+              trail_after_r=1.0 if args.trail else 1e9)
+
+    if args.sweep:
+        print(sweep(df, **kw))
+        return 0
+
+    pess = backtest(df, tie_break="stop", **kw)
+    opt = backtest(df, tie_break="target", **kw)
     print(pess.summary("pessimistic    "))
     print(opt.summary("optimistic     "))
     print("  the truth is between these two; a strategy is only worth trading "
