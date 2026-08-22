@@ -39,6 +39,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from .. import indicators as ind
 from .. import pivots
@@ -100,6 +101,57 @@ class Backtest:
             return 0.0
         eq = np.cumsum([t.r_multiple for t in self.trades])
         return float(np.max(np.maximum.accumulate(eq) - eq))
+
+    @property
+    def se(self) -> float:
+        """Standard error of the expectancy. Without this the mean is a rumour."""
+        if self.n < 2:
+            return float("nan")
+        rs = np.array([t.r_multiple for t in self.trades])
+        return float(rs.std(ddof=1) / np.sqrt(len(rs)))
+
+    @property
+    def reward_risk(self) -> float:
+        """Mean planned reward:risk at entry, in R.
+
+        The diagnostic that explains a disappointing result faster than
+        anything else. Pivot targeting only pays because the next level is
+        several R away; if the stop is wide enough that the level sits at 1R,
+        the setup is a coin flip with extra steps no matter how good the
+        entry filter is.
+        """
+        if not self.n:
+            return float("nan")
+        return float(np.mean([abs(t.target - t.entry) / abs(t.entry - t.stop)
+                              for t in self.trades]))
+
+    def trades_needed(self, target_edge: float = 0.10, power: float = 0.80,
+                      alpha: float = 0.05) -> Optional[int]:
+        """How many trades would settle an edge of ``target_edge`` R."""
+        if self.n < 2:
+            return None
+        rs = np.array([t.r_multiple for t in self.trades])
+        sd = float(rs.std(ddof=1))
+        z_a, z_b = stats.norm.ppf(1 - alpha), stats.norm.ppf(power)
+        return int(np.ceil(((z_a + z_b) * sd / target_edge) ** 2))
+
+    def verdict(self, days: Optional[float] = None) -> str:
+        if self.n < 2:
+            return "  too few trades to say anything"
+        sigmas = self.expectancy / self.se if self.se else float("nan")
+        out = [f"  expectancy {self.expectancy:+.4f}R  SE {self.se:.4f}  "
+               f"({abs(sigmas):.2f} SE from zero"
+               f"{' -- indistinguishable' if abs(sigmas) < 2 else ''})",
+               f"  reward:risk planned at entry: {self.reward_risk:.2f}R mean"]
+        need = self.trades_needed()
+        if need:
+            line = f"  to establish a +0.10R edge at 80% power: ~{need:,} trades"
+            if days and days > 0:
+                rate = self.n / days
+                if rate > 0:
+                    line += f"  (at {rate:.2f}/day = {need / rate / 365:.1f} years)"
+            out.append(line)
+        return "\n".join(out)
 
     def summary(self, label: str = "") -> str:
         if not self.n:
@@ -340,6 +392,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(opt.summary("optimistic     "))
     print("  the truth is between these two; a strategy is only worth trading "
           "if the\n  pessimistic bound clears zero.")
+    span = (df.index[-1] - df.index[0]).total_seconds() / 86400.0
+    print()
+    print(pess.verdict(days=span))
     bt = pess
     if bt.n:
         longs = Backtest([t for t in bt.trades if t.direction == LONG], bt.bars)
