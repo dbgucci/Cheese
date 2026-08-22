@@ -120,3 +120,30 @@ def test_no_lookahead_in_the_backtest():
     after = pr.backtest(poisoned.iloc[:cut], stop_buffer_atr=2.0)
     assert base.n == after.n and base.n > 0
     assert [t.entry_time for t in base.trades] == [t.entry_time for t in after.trades]
+
+
+def test_skipping_a_level_raises_reward_to_risk():
+    """The lever for the 1:1 problem: aim past the nearest level."""
+    kw = dict(spread_points=0.0, trail_after_r=1e9)
+    near = pr.backtest(_null(), target_skip=0, **kw)
+    far = pr.backtest(_null(), target_skip=2, **kw)
+    assert far.reward_risk > near.reward_risk * 1.5
+    assert far.win_rate < near.win_rate, "further target, hit less often"
+
+
+def test_min_rr_filters_out_the_cramped_setups():
+    kw = dict(spread_points=0.0, trail_after_r=1e9)
+    loose = pr.backtest(_null(), min_rr=0.5, **kw)
+    tight = pr.backtest(_null(), min_rr=3.0, **kw)
+    assert tight.n < loose.n
+    assert tight.reward_risk > loose.reward_risk
+
+
+def test_neither_lever_manufactures_an_edge_on_a_null():
+    """Asymmetry is not edge. Both must still lose on a random walk."""
+    for skip in (0, 1, 2):
+        bt = pr.backtest(_null(), target_skip=skip, min_rr=2.0,
+                         spread_points=0.0, trail_after_r=1e9)
+        rs = np.array([t.r_multiple for t in bt.trades])
+        se = rs.std(ddof=1) / np.sqrt(len(rs))
+        assert rs.mean() < 3 * se, f"skip={skip} invented {rs.mean():+.3f}R"

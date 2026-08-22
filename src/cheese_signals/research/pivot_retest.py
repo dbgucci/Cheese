@@ -161,14 +161,15 @@ class Backtest:
                 f"PF={self.profit_factor:.2f}  maxDD={self.max_drawdown_r():.1f}R")
 
 
-def _next_level_above(lad: np.ndarray, price: float) -> Optional[float]:
+def _next_level_above(lad: np.ndarray, price: float, skip: int = 0) -> Optional[float]:
+    """The ``skip``-th level above price. skip=0 is the nearest one."""
     above = lad[lad > price]
-    return float(above[0]) if len(above) else None
+    return float(above[skip]) if len(above) > skip else None
 
 
-def _next_level_below(lad: np.ndarray, price: float) -> Optional[float]:
+def _next_level_below(lad: np.ndarray, price: float, skip: int = 0) -> Optional[float]:
     below = lad[lad < price]
-    return float(below[-1]) if len(below) else None
+    return float(below[-1 - skip]) if len(below) > skip else None
 
 
 def backtest(
@@ -182,6 +183,8 @@ def backtest(
     trend_fast: int = 50,
     trend_slow: int = 200,
     tie_break: str = "stop",
+    target_skip: int = 0,
+    min_rr: float = 0.5,
 ) -> Backtest:
     """Break a daily pivot level, retest it, enter if the trend still agrees.
 
@@ -278,19 +281,19 @@ def backtest(
             # touched the level this bar and closed back on the break side
             if direction == LONG:
                 retested = l[i] <= lvl and c[i] > lvl
-                target = _next_level_above(lad, c[i])
+                target = _next_level_above(lad, c[i], target_skip)
                 stop = lvl - stop_buffer_atr * atr[i]
             else:
                 retested = h[i] >= lvl and c[i] < lvl
-                target = _next_level_below(lad, c[i])
+                target = _next_level_below(lad, c[i], target_skip)
                 stop = lvl + stop_buffer_atr * atr[i]
             if not retested or target is None:
                 continue
 
             entry = o[i + 1]                       # fill on the next bar's open
             risk = abs(entry - stop)
-            if risk <= 0 or abs(target - entry) < risk * 0.5:
-                continue                            # not worth at least 0.5R
+            if risk <= 0 or abs(target - entry) < risk * min_rr:
+                continue          # the level is too close to be worth the risk
             open_trade = {"time": idx[i + 1], "dir": direction, "entry": entry,
                           "stop": stop, "target": target, "risk": risk, "level": lvl}
             pending.pop(lvl, None)
@@ -310,33 +313,35 @@ def sweep(df: pd.DataFrame, test_fraction: float = 0.35, **fixed) -> str:
     """
     cut = int(len(df) * (1 - test_fraction))
     train, test = df.iloc[:cut], df.iloc[cut:]
-    grid = [(adx, stop, rt)
-            for adx in (0.0, 15.0, 20.0, 25.0, 30.0)
-            for stop in (1.5, 2.0, 3.0, 4.0)
-            for rt in (6, 12, 24)]
+    grid = [(adx, stop, skip, rr)
+            for adx in (0.0, 20.0, 25.0)
+            for stop in (1.0, 1.5, 2.0, 3.0)
+            for skip in (0, 1, 2)
+            for rr in (0.5, 1.5, 2.5)]
     fixed = {k: v for k, v in fixed.items()
-             if k not in ("adx_min", "stop_buffer_atr", "retest_bars")}
+             if k not in ("adx_min", "stop_buffer_atr", "target_skip", "min_rr")}
 
     rows = []
-    for adx, stop, rt in grid:
+    for adx, stop, skip, rr in grid:
         tr = backtest(train, adx_min=adx, stop_buffer_atr=stop,
-                      retest_bars=rt, **fixed)
-        if tr.n < 30:
+                      target_skip=skip, min_rr=rr, **fixed)
+        if tr.n < 25:
             continue
         te = backtest(test, adx_min=adx, stop_buffer_atr=stop,
-                      retest_bars=rt, **fixed)
-        rows.append((tr.expectancy, tr.n, te.expectancy, te.n, adx, stop, rt))
+                      target_skip=skip, min_rr=rr, **fixed)
+        rows.append((tr.expectancy, tr.n, te.expectancy, te.n,
+                     adx, stop, skip, rr, tr.reward_risk))
 
     if not rows:
         return "no parameter set produced enough trades to judge"
     rows.sort(key=lambda r: -r[0])
     out = [f"SWEEP  {len(rows)} parameter sets, train {len(train):,} bars / "
            f"holdout {len(test):,} bars",
-           f"  {'adx':>5} {'stopATR':>8} {'retest':>7} "
-           f"{'train n':>8} {'train E':>9} {'hold n':>7} {'hold E':>9}"]
-    for e_tr, n_tr, e_te, n_te, adx, stop, rt in rows[:12]:
-        out.append(f"  {adx:>5.0f} {stop:>8.1f} {rt:>7d} "
-                   f"{n_tr:>8d} {e_tr:>+9.3f} {n_te:>7d} {e_te:>+9.3f}")
+           f"  {'adx':>5} {'stop':>6} {'skip':>5} {'minRR':>6} {'R:R':>6} "
+           f"{'trn n':>6} {'train E':>9} {'hld n':>6} {'hold E':>9}"]
+    for e_tr, n_tr, e_te, n_te, adx, stop, skip, rr, rrr in rows[:14]:
+        out.append(f"  {adx:>5.0f} {stop:>6.1f} {skip:>5d} {rr:>6.1f} {rrr:>6.2f} "
+                   f"{n_tr:>6d} {e_tr:>+9.3f} {n_te:>6d} {e_te:>+9.3f}")
     best = rows[0]
     out.append("")
     out.append(f"  best on train: {best[0]:+.3f}R  ->  holdout {best[2]:+.3f}R "
@@ -356,6 +361,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "below ~1.5 the stop sits inside a typical bar and the "
                          "result is dominated by intrabar guesswork)")
     ap.add_argument("--retest-bars", type=int, default=12, dest="retest_bars")
+    ap.add_argument("--target-skip", type=int, default=0, dest="target_skip",
+                    help="aim past the nearest level: 0 targets the next one, "
+                         "1 the one beyond it. Raises reward:risk at the cost "
+                         "of hitting it less often.")
+    ap.add_argument("--min-rr", type=float, default=0.5, dest="min_rr",
+                    help="skip a setup whose target is closer than this many R "
+                         "(default 0.5). Raising it selects for asymmetry.")
     ap.add_argument("--trail", action="store_true",
                     help="enable the trailing stop the bot advertises. Measured "
                          "on a no-edge series it raises win rate and lowers "
@@ -379,8 +391,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         ap.error("give a csv, or --synthetic N")
 
     kw = dict(adx_min=args.adx_min, stop_buffer_atr=args.stop_atr,
-              retest_bars=args.retest_bars,
-              trail_after_r=1.0 if args.trail else 1e9)
+              retest_bars=args.retest_bars, target_skip=args.target_skip,
+              min_rr=args.min_rr, trail_after_r=1.0 if args.trail else 1e9)
 
     if args.sweep:
         print(sweep(df, **kw))
