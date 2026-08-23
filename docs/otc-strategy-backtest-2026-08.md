@@ -11,9 +11,15 @@ that space to exhaustion: **102 strategy variants × 6 pairs × 24 hours ×
 4 expiries = 19,706 testable configurations**, each scored on a holdout the
 search never touched.
 
-The short version: the search found configurations winning **67%**. None of
-them survived. And the live account settled the question independently —
-it lost **exactly** what a coin at an 85% payout is supposed to lose.
+Every headline number was then re-derived on **24 independent universes of
+Gaussian random walks** put through the identical pipeline, because the
+benchmark for "my best cell hit 67%" is not 50% — it is what the same search
+finds in data known to hold nothing.
+
+The short version: the search found configurations winning **67%**. So did
+the coins. None of it survived. And the live account settled the question
+independently — it lost **exactly** what a coin at an 85% payout is supposed
+to lose.
 
 ---
 
@@ -122,9 +128,40 @@ with the choice. Simulating exactly that, over 12 sequential folds:
 
 Four defensible versions of the same idea, spanning **43% to 57%**. The
 choice of an arbitrary selection parameter moves the result by fourteen
-points — which is the signature of noise, not of an edge. The 57.44% is the
-best of four tries on 242 trades; at that sample size the 95% interval is
-±6.3%.
+points.
+
+That 57.44% is the one number in this study that looked like an edge, so it
+was tested rather than argued away. The entire pipeline — signal generation,
+19,706-cell grid, all four walk-forward rules — was re-run on **24 independent
+universes of Gaussian random walks** matched to each pair's volatility and
+segment structure. Coins, by construction, contain nothing.
+
+| selection rule | real | coin mean | coin sd | coin range | p(coin ≥ real) |
+|---|---|---|---|---|---|
+| top 1, ≥150 | **57.44%** | 49.45% | 5.06 | 41.62 – 58.87 | **0.083** |
+| top 5, ≥150 | 52.56% | 49.98% | 2.67 | 44.69 – 54.10 | 0.208 |
+| top 1, ≥400 | 43.28% | 49.37% | 8.07 | **31.67 – 67.50** | 0.833 |
+| top 5, ≥400 | 43.56% | 49.47% | 3.09 | 44.83 – 55.04 | 1.000 |
+
+Every real number falls inside the distribution that coins produce. The
+57.44% does not clear p<0.05 even taken on its own — and it was not obtained
+on its own. It was the best of four rules, and the right benchmark is the
+coin's *best of four*: mean 53.88%, range [47.71%, 67.50%], giving
+**p = 0.167**.
+
+Two details from that table are worth more than the p-values:
+
+* A walk-forward on a **pure random walk** returned **67.50%**. Anyone who
+  ran that one experiment and stopped would have a backtest showing a
+  two-thirds win rate on a series with provably nothing in it.
+* Within a single coin universe, the four rules spread by 8.5 points on
+  average and up to 19.8. The real data's 14.2-point spread is unremarkable.
+  In **58%** of coin universes, at least one of the four rules beat the
+  52.08% break-even for a 92% payout.
+
+That last figure is the practical warning. A bot that tries a handful of
+selection rules and adopts whichever backtests best will clear break-even
+more often than not **on data guaranteed to be worthless**.
 
 ---
 
@@ -245,9 +282,16 @@ trusted:
 * every rule appears in both polarities, so the grid cannot smuggle in a
   prior about direction;
 * `synthetic_null()` re-runs the *entire* pipeline on volatility-matched
-  random walks, so any headline number has a proper benchmark;
+  random walks, so any headline number has a proper benchmark — this is what
+  turned the one promising 57.44% into a measured p of 0.167;
 * `walk_forward()` reports what an adaptive bot would actually have earned,
   which is the only backtest number a live bot should be held to.
+
+And one habit is worth carrying into the bot regardless of the feed: **58%
+of coin universes produced at least one selection rule that beat the 92%
+break-even.** A bot that tries several rules and keeps whichever backtests
+best is not selecting an edge, it is selecting a lucky draw. Any rule the bot
+adopts should have to clear `synthetic_null()` first.
 
 Point it at a market with real participants, real sessions and a cost wall a
 real edge can clear. That work is in `cheese_signals/markets/`. On a 92%
