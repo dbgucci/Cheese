@@ -45,6 +45,7 @@ class Intent:
     stop_loss: Optional[float] = None
     reason: str = ""
     boundary: Optional[float] = None
+    take_profit: Optional[float] = None
 
     def __bool__(self) -> bool:
         return self.direction != FLAT
@@ -294,3 +295,137 @@ STRATEGIES = {
     IntradayMomentum.name: IntradayMomentum,
     OpeningRangeBreakout.name: OpeningRangeBreakout,
 }
+
+
+# ---------------------------------------------------------------------------
+# Pivot breakout-and-retest
+# ---------------------------------------------------------------------------
+@dataclass
+class PivotConfig:
+    """Defaults come from the sweep, not from the product being copied.
+
+    On 60 days of Nasdaq 5-minute bars a 1.0 ATR stop appeared in nine of the
+    fourteen best parameter sets and the ADX filter appeared in none of the top
+    two, so momentum filtering is off by default here even though the bot this
+    reconstructs advertises it. That evidence is one quarter of one instrument
+    and roughly the ninety-first percentile of a no-edge null, which is a
+    reason to prefer these numbers over the alternatives and not a reason to
+    trust them.
+    """
+
+    stop_atr: float = 1.0
+    atr_period: int = 14
+    retest_bars: int = 12
+    target_skip: int = 0          # 0 aims at the next level, 1 at the one beyond
+    min_rr: float = 1.5           # refuse a target closer than this many R
+    adx_min: float = 0.0          # 0 disables the momentum filter
+    session_open: time = time(13, 30)
+    session_close: time = time(20, 0)
+    evaluate_every_minutes: int = 5
+    max_trades_per_session: int = 3
+    min_bars: int = 120
+
+
+class PivotRetest:
+    """Break a daily pivot level, wait for the retest, trade the hold.
+
+    The reconstruction of "QT Sniper Auto Bot" from
+    :mod:`cheese_signals.research.pivot_retest`, wired to the live executor.
+    The rules are identical so that what runs is what was measured; the only
+    difference is that a backtest knows the bar closed and this does not, so
+    every decision is taken on ``df`` truncated at ``now``.
+
+    Deliberately stateless. The runner evaluates on a timer rather than once
+    per bar, so remembering which levels were broken between calls would make
+    behaviour depend on when the loop happened to fire. Breaks are re-derived
+    from the last ``retest_bars`` each time instead.
+    """
+
+    name = "pivot_retest"
+
+    def __init__(self, config: Optional[PivotConfig] = None, point: float = 1.0):
+        self.cfg = config or PivotConfig()
+        self.point = point
+
+    def _ladder(self, df: pd.DataFrame, now: pd.Timestamp):
+        from .. import pivots
+        levels = pivots.daily_levels(pivots.to_daily(df))
+        if levels.empty:
+            return None
+        key = pd.Timestamp(now).normalize()
+        if key not in levels.index:
+            return None
+        return pivots.ladder(levels.loc[key])
+
+    def evaluate(self, df: pd.DataFrame, now: pd.Timestamp,
+                 trades_today: int) -> Intent:
+        from .. import indicators as ind
+
+        if trades_today >= self.cfg.max_trades_per_session:
+            return Intent(reason=f"{trades_today} trades already today")
+
+        df = df[df.index <= now]
+        if len(df) < self.cfg.min_bars:
+            return Intent(reason=f"only {len(df)} bars of history")
+
+        lad = self._ladder(df, now)
+        if lad is None or lad.size == 0:
+            return Intent(reason="no pivot levels for today yet")
+
+        atr = float(ind.atr(df["high"], df["low"], df["close"],
+                            self.cfg.atr_period).iloc[-1])
+        if not (atr > 0) or pd.isna(atr):
+            return Intent(reason="no ATR yet")
+
+        if self.cfg.adx_min > 0:
+            adx = float(ind.adx(df["high"], df["low"], df["close"]).iloc[-1])
+            if pd.isna(adx) or adx < self.cfg.adx_min:
+                return Intent(reason=f"ADX {adx:.1f} below {self.cfg.adx_min}")
+
+        c = df["close"].to_numpy(dtype=float)
+        h = df["high"].to_numpy(dtype=float)
+        l = df["low"].to_numpy(dtype=float)
+        i = len(df) - 1
+
+        broken: dict[float, int] = {}
+        for k in range(max(1, i - self.cfg.retest_bars), i + 1):
+            for lvl in lad:
+                if c[k - 1] <= lvl < c[k]:
+                    broken[float(lvl)] = BUY
+                elif c[k - 1] >= lvl > c[k]:
+                    broken[float(lvl)] = SELL
+
+        for lvl, direction in broken.items():
+            if direction == BUY:
+                if not (l[i] <= lvl and c[i] > lvl):
+                    continue
+                above = lad[lad > c[i]]
+                if len(above) <= self.cfg.target_skip:
+                    continue
+                target = float(above[self.cfg.target_skip])
+                stop = lvl - self.cfg.stop_atr * atr
+            else:
+                if not (h[i] >= lvl and c[i] < lvl):
+                    continue
+                below = lad[lad < c[i]]
+                if len(below) <= self.cfg.target_skip:
+                    continue
+                target = float(below[-1 - self.cfg.target_skip])
+                stop = lvl + self.cfg.stop_atr * atr
+
+            risk = abs(c[i] - stop)
+            if risk <= 0:
+                continue
+            rr = abs(target - c[i]) / risk
+            if rr < self.cfg.min_rr:
+                continue
+            side = "long" if direction == BUY else "short"
+            return Intent(
+                direction=direction,
+                stop_loss=stop,
+                take_profit=target,
+                boundary=lvl,
+                reason=(f"{side} retest of {lvl:.2f}, stop {stop:.2f}, "
+                        f"target {target:.2f} ({rr:.1f}R)"),
+            )
+        return Intent(reason="no level retested")

@@ -21,7 +21,8 @@ from typing import Optional
 from . import news as news_mod
 from .execution import ExecutionConfig, Executor
 from .guards import GuardConfig, Guards
-from .strategy import IntradayMomentum, MomentumConfig, OpeningRangeBreakout, ORBConfig
+from .strategy import (IntradayMomentum, MomentumConfig, OpeningRangeBreakout,
+                       ORBConfig, PivotConfig, PivotRetest)
 from .trader import CycleEvent, SymbolPlan, Trader
 
 # Sessions in UTC. Index CFDs track the US cash session; gold is traded
@@ -60,7 +61,11 @@ def build_plans(broker, symbols: Optional[list[str]] = None,
         except (KeyError, RuntimeError):
             missing.append(f"{want}: no contract spec")
             continue
-        if strategy_name == "opening_range_breakout":
+        if strategy_name == "pivot_retest":
+            strat = PivotRetest(
+                PivotConfig(session_open=open_t, session_close=close_t,
+                            evaluate_every_minutes=evaluate_every), point=point)
+        elif strategy_name == "opening_range_breakout":
             strat = OpeningRangeBreakout(
                 ORBConfig(session_open=open_t, session_close=close_t), point=point)
         else:
@@ -195,7 +200,8 @@ def main(argv: Optional[list[str]] = None) -> int:      # pragma: no cover
                     help="actually place orders; without this nothing is sent")
     ap.add_argument("--symbols", nargs="*", default=None)
     ap.add_argument("--strategy", default="intraday_momentum",
-                    choices=["intraday_momentum", "opening_range_breakout"])
+                    choices=["intraday_momentum", "opening_range_breakout",
+                             "pivot_retest"])
     ap.add_argument("--risk", type=float, default=0.005,
                     help="fraction of equity risked per trade (default 0.5%%)")
     ap.add_argument("--max-daily-loss", type=float, default=0.03,

@@ -189,6 +189,7 @@ class Trader:
 
         result = self.executor.open(
             plan.symbol, intent.direction, intent.stop_loss,
+            take_profit=intent.take_profit,
             comment=f"{getattr(plan.strategy, 'name', 'strategy')}")
         if not result.ok:
             self._emit(now, plan.symbol, "refused", result.reason)
